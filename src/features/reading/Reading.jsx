@@ -1,8 +1,7 @@
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowRight,
-  BookOpen,
   CheckCircle2,
   CircleHelp,
   LoaderCircle,
@@ -21,9 +20,42 @@ const normalizeArabic = (text = '') =>
     .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
     .replace(/\u0640/g, '')
     .replace(/[أإآٱ]/g, 'ا')
-    .replace(/ى/g, 'ي')
-    .replace(/[^\u0621-\u064A\s]/g, '')
+    .replace(/[ىي]/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/[^\u0621-\u064A\s]/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
+
+function getWords(text = '') {
+  return normalizeArabic(text).split(/\s+/).filter(Boolean)
+}
+
+// Aligner les mots reconnus avec le texte attendu.
+// Les mots sautés ne décalent pas automatiquement toute la suite.
+function alignWords(expectedWords, spokenText) {
+  const spokenWords = getWords(spokenText)
+  const matches = {}
+  let cursor = 0
+
+  for (const spokenWord of spokenWords) {
+    const limit = Math.min(cursor + 5, expectedWords.length)
+    let foundIndex = -1
+
+    for (let i = cursor; i < limit; i++) {
+      if (spokenWord === expectedWords[i]) {
+        foundIndex = i
+        break
+      }
+    }
+
+    if (foundIndex !== -1) {
+      matches[foundIndex] = 'match'
+      cursor = foundIndex + 1
+    }
+  }
+
+  return matches
+}
 
 export default function Reading({
   surahId,
@@ -38,37 +70,46 @@ export default function Reading({
   const [listening, setListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [wordStates, setWordStates] = useState({})
+  const [currentAyahIndex, setCurrentAyahIndex] = useState(0)
+  const [simpleMode, setSimpleMode] = useState(
+    () => document.documentElement.dataset.a11ySimple === 'on',
+  )
   const [playingAyah, setPlayingAyah] = useState(null)
-
-const [currentAyahIndex, setCurrentAyahIndex] = useState(0)
-const [simpleMode, setSimpleMode] = useState(
-  () => document.documentElement.dataset.a11ySimple === 'on'
-)
-const [largeControls, setLargeControls] = useState(true)
-
-
-
-useEffect(() => {
-  const syncAccessibility = () => {
-    const root = document.documentElement
-
-    setSimpleMode(root.dataset.a11ySimple === 'on')
-    setLargeControls(root.dataset.a11ySimple === 'on')
-  }
-
-  window.addEventListener('a11y-settings-changed', syncAccessibility)
-
-  return () => {
-    window.removeEventListener('a11y-settings-changed', syncAccessibility)
-  }
-}, [])
-
-
 
   const recognitionRef = useRef(null)
   const audioRef = useRef(null)
+  const transcriptRef = useRef('')
+  const surahRef = useRef(null)
 
+  const ayahs = surah?.ayahs ?? []
 
+  const expectedWords = useMemo(
+    () => ayahs.flatMap((ayah) => getWords(ayah.text)),
+    [ayahs],
+  )
+
+  const wordOffsets = useMemo(() => {
+    let offset = 0
+
+    return ayahs.map((ayah) => {
+      const currentOffset = offset
+      offset += getWords(ayah.text).length
+      return currentOffset
+    })
+  }, [ayahs])
+
+  const matchedCount = Object.values(wordStates).filter(
+    (state) => state === 'match',
+  ).length
+
+  const progress = expectedWords.length
+    ? Math.min(
+        100,
+        Math.round((matchedCount / expectedWords.length) * 100),
+      )
+    : 0
+
+  // Charger le texte arabe et les fichiers audio de la sourate.
   useEffect(() => {
     let cancelled = false
 
@@ -78,6 +119,8 @@ useEffect(() => {
       setSurah(null)
       setWordStates({})
       setTranscript('')
+      transcriptRef.current = ''
+      setCurrentAyahIndex(0)
 
       try {
         const response = await fetch(
@@ -94,15 +137,28 @@ useEffect(() => {
           throw new Error('بيانات السورة غير متاحة')
         }
 
-        if (!cancelled) setSurah(result.data)
+        if (!cancelled) {
+          setSurah(result.data)
+          surahRef.current = result.data
+        }
       } catch {
         if (!cancelled) {
-          setError('تعذر تحميل السورة. تحقق من اتصال الإنترنت ثم حاول مجدداً.')
+          setError(
+            'تعذر تحميل السورة. تحقق من اتصال الإنترنت ثم حاول مجدداً.',
+          )
         }
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
+
+    recognitionRef.current?.stop()
+    audioRef.current?.pause()
+    recognitionRef.current = null
+    audioRef.current = null
+
+    setListening(false)
+    setPlayingAyah(null)
 
     loadSurah()
 
@@ -111,17 +167,47 @@ useEffect(() => {
     }
   }, [surahId])
 
+  // Synchroniser les préférences d'accessibilité.
+  useEffect(() => {
+    function syncAccessibility() {
+      setSimpleMode(
+        document.documentElement.dataset.a11ySimple === 'on',
+      )
+    }
+
+    window.addEventListener(
+      'a11y-settings-changed',
+      syncAccessibility,
+    )
+
+    return () => {
+      window.removeEventListener(
+        'a11y-settings-changed',
+        syncAccessibility,
+      )
+    }
+  }, [])
+
+  // Nettoyage du microphone et du lecteur audio.
   useEffect(() => {
     return () => {
       recognitionRef.current?.stop()
-      audioRef.current?.pause()
+
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.src = ''
+      }
     }
   }, [])
 
   function stopListening() {
-    recognitionRef.current?.stop()
+    const recognition = recognitionRef.current
     recognitionRef.current = null
     setListening(false)
+
+    if (recognition) {
+      recognition.stop()
+    }
   }
 
   function startListening() {
@@ -139,42 +225,42 @@ useEffect(() => {
     recognitionRef.current?.stop()
 
     const recognition = new SpeechRecognition()
+
     recognition.lang = 'ar-SA'
     recognition.continuous = true
     recognition.interimResults = true
+    recognition.maxAlternatives = 3
 
-    recognition.onstart = () => {
-      setListening(true)
-      setError('')
-    }
-
+    // Les résultats intermédiaires ne changent ni les couleurs
+    // ni la progression.
     recognition.onresult = (event) => {
-      let spoken = ''
+      const finalParts = []
 
       for (let i = 0; i < event.results.length; i++) {
-        spoken += `${event.results[i][0].transcript} `
+        const result = event.results[i]
+
+        if (result.isFinal && result[0]?.transcript) {
+          finalParts.push(result[0].transcript)
+        }
       }
 
-      setTranscript(spoken.trim())
+      const finalText = finalParts.join(' ').trim()
 
-      const expectedWords = (surah?.ayahs || [])
-        .flatMap((ayah) =>
-          normalizeArabic(ayah.text).split(/\s+/),
-        )
-        .filter(Boolean)
+      transcriptRef.current = finalText
+      setTranscript(finalText)
 
-      const spokenWords = normalizeArabic(spoken)
-        .split(/\s+/)
-        .filter(Boolean)
+      const currentSurah = surahRef.current
 
-      const nextStates = {}
+      if (!currentSurah || !finalText) {
+        setWordStates({})
+        return
+      }
 
-      spokenWords.forEach((word, index) => {
-        if (index >= expectedWords.length) return
+      const words = currentSurah.ayahs.flatMap((ayah) =>
+        getWords(ayah.text),
+      )
 
-        nextStates[index] =
-          word === expectedWords[index] ? 'match' : 'review'
-      })
+      const nextStates = alignWords(words, finalText)
 
       setWordStates(nextStates)
     }
@@ -182,26 +268,50 @@ useEffect(() => {
     recognition.onerror = (event) => {
       if (event.error !== 'aborted') {
         setError(
-          'لم نتمكن من التعرف على الصوت. تحقق من إذن الميكروفون وحاول مجدداً.',
+          event.error === 'not-allowed'
+            ? 'يرجى السماح باستخدام الميكروفون من إعدادات المتصفح.'
+            : 'تعذر التعرف على الصوت. حاول مجدداً.',
         )
       }
+
       setListening(false)
     }
 
-    recognition.onend = () => setListening(false)
+    recognition.onend = () => {
+      setListening(false)
+      recognitionRef.current = null
+    }
 
-    recognitionRef.current = recognition
-    recognition.start()
+    try {
+      setError('')
+      recognitionRef.current = recognition
+      recognition.start()
+    } catch {
+      recognitionRef.current = null
+      setListening(false)
+      setError('تعذر تشغيل الميكروفون. حاول مجدداً.')
+    }
+  }
+
+  function toggleListening() {
+    if (listening) {
+      stopListening()
+    } else {
+      startListening()
+    }
   }
 
   function playAyah(ayah) {
-    if (!ayah.audio) {
+    if (!ayah?.audio) {
       setError('الصوت غير متاح لهذه الآية حالياً.')
       return
     }
 
-    if (playingAyah === ayah.numberInSurah) {
-      audioRef.current?.pause()
+    if (
+      playingAyah === ayah.numberInSurah &&
+      audioRef.current
+    ) {
+      audioRef.current.pause()
       setPlayingAyah(null)
       return
     }
@@ -210,49 +320,51 @@ useEffect(() => {
       audioRef.current = new Audio()
     }
 
-    audioRef.current.pause()
-    audioRef.current.src = ayah.audio
-    audioRef.current.onended = () => setPlayingAyah(null)
-    audioRef.current.onerror = () => {
+    const audio = audioRef.current
+
+    audio.pause()
+    audio.src = ayah.audio
+    audio.onended = () => setPlayingAyah(null)
+    audio.onerror = () => {
       setPlayingAyah(null)
       setError('تعذر تشغيل الصوت. حاول مجدداً.')
     }
 
-    audioRef.current.play()
+    setError('')
+
+    audio.play()
       .then(() => setPlayingAyah(ayah.numberInSurah))
-      .catch(() => setError('تعذر تشغيل الصوت حالياً.'))
+      .catch(() => {
+        setPlayingAyah(null)
+        setError('تعذر تشغيل الصوت. تحقق من اتصال الإنترنت.')
+      })
   }
 
   function resetPractice() {
     stopListening()
+
     audioRef.current?.pause()
     setPlayingAyah(null)
+
+    transcriptRef.current = ''
     setTranscript('')
     setWordStates({})
     setError('')
   }
 
-  const allWords = (surah?.ayahs || [])
-    .flatMap((ayah) => normalizeArabic(ayah.text).split(/\s+/))
-    .filter(Boolean)
-
-  const matchedCount = Object.values(wordStates)
-    .filter((state) => state === 'match').length
-
-  const progress = allWords.length
-    ? Math.round((matchedCount / allWords.length) * 100)
-    : 0
-
-const wordOffsets = (surah?.ayahs || []).map((_, index, ayahs) =>
-  ayahs
-    .slice(0, index)
-    .reduce(
-      (total, item) =>
-        total + normalizeArabic(item.text).split(/\s+/).filter(Boolean).length,
-      0
+  function navigateAyah(direction) {
+    setCurrentAyahIndex((previous) =>
+      Math.max(
+        0,
+        Math.min(ayahs.length - 1, previous + direction),
+      ),
     )
-)
-  let wordIndex = simpleMode ? (wordOffsets[currentAyahIndex] || 0) : 0
+  }
+
+  const displayedAyahs = simpleMode
+    ? [ayahs[currentAyahIndex]].filter(Boolean)
+    : ayahs
+
   return (
     <main
       dir="rtl"
@@ -261,20 +373,20 @@ const wordOffsets = (surah?.ayahs || []).map((_, index, ayahs) =>
     >
       <div className="mx-auto max-w-4xl">
         <button
+          type="button"
           onClick={onBack}
-          className="mb-6 inline-flex items-center gap-2 rounded-xl px-4 py-3 font-medium text-emerald-800 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
+          className="mb-6 inline-flex min-h-12 items-center gap-2 rounded-xl px-4 py-3 font-semibold text-emerald-800 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
         >
-          <ArrowRight size={20} />
+          <ArrowRight size={22} />
           العودة إلى السور
         </button>
 
         <header className="mb-8 rounded-3xl bg-white p-6 shadow-sm sm:p-8">
-          <div className="mb-3 flex items-center gap-3 text-emerald-700">
-            <BookOpen size={25} />
-            <span className="font-medium">رحلة التعلم</span>
-          </div>
+          <p className="mb-3 font-medium text-emerald-700">
+            رحلة التعلم
+          </p>
 
-          <h1 className="text-3xl font-bold text-emerald-950 sm:text-4xl">
+          <h1 className="text-3xl font-bold leading-relaxed text-emerald-950 sm:text-4xl">
             {surah?.name || surahName}
           </h1>
 
@@ -285,31 +397,34 @@ const wordOffsets = (surah?.ayahs || []).map((_, index, ayahs) =>
           )}
 
           <p className="mt-4 leading-8 text-slate-600">
-            اقرأ بهدوء، واستمع إلى التلاوة، واستخدم الميكروفون
-            لتجربة المتابعة الصوتية.
+            استمع إلى التلاوة، واقرأ حسب وتيرتك، وتابع تقدمك.
           </p>
         </header>
-
-        {loading && (
-          <div className="flex items-center justify-center gap-3 rounded-2xl bg-white p-10">
-            <LoaderCircle className="animate-spin text-emerald-700" />
-            <span>جارٍ تحميل السورة...</span>
-          </div>
-        )}
 
         {error && (
           <div
             role="alert"
-            className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-900"
+            className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 leading-7 text-amber-950"
           >
             {error}
           </div>
         )}
 
+        {loading && (
+          <div className="flex items-center justify-center gap-3 rounded-2xl bg-white p-10">
+            <LoaderCircle
+              size={24}
+              className="animate-spin text-emerald-700 motion-reduce:animate-none"
+            />
+            <span>جارٍ تحميل السورة...</span>
+          </div>
+        )}
+
         {!loading && !surah && (
           <button
+            type="button"
             onClick={() => window.location.reload()}
-            className="rounded-xl bg-emerald-700 px-5 py-3 text-white"
+            className="rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white"
           >
             إعادة المحاولة
           </button>
@@ -317,146 +432,159 @@ const wordOffsets = (surah?.ayahs || []).map((_, index, ayahs) =>
 
         {surah && (
           <>
-            <section
-              aria-label="أدوات القراءة"
-              className="mb-6 rounded-2xl bg-white p-5 shadow-sm"
-            >
+            <section className="mb-6 rounded-2xl bg-white p-5 shadow-sm sm:p-6">
               <div className="flex flex-wrap gap-3">
                 <button
-                  onClick={listening ? stopListening : startListening}
-                  className={`inline-flex  min-h-14 items-center gap-2 rounded-xl px-5 py-3 font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 ${
-                    listening
-                      ? 'bg-rose-600 focus-visible:outline-rose-700'
-                      : 'bg-emerald-700 focus-visible:outline-emerald-700'
+                  type="button"
+                  onClick={toggleListening}
+                  aria-pressed={listening}
+                  className={`inline-flex min-h-14 items-center gap-3 rounded-xl px-5 py-3 text-lg font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
+                    listening ? 'bg-rose-600' : 'bg-emerald-700'
                   }`}
                 >
-                  {listening ? <MicOff size={19} /> : <Mic size={19} />}
-                  {listening ? 'إيقاف الميكروفون' : 'ابدأ القراءة الصوتية'}
+                  {listening ? (
+                    <MicOff size={22} />
+                  ) : (
+                    <Mic size={22} />
+                  )}
+                  {listening
+                    ? 'إيقاف الميكروفون'
+                    : 'ابدأ القراءة الصوتية'}
                 </button>
 
                 <button
+                  type="button"
                   onClick={resetPractice}
-                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
+                  className="inline-flex min-h-14 items-center gap-2 rounded-xl border border-slate-300 px-5 py-3 font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
                 >
-                  <RotateCcw size={18} />
+                  <RotateCcw size={20} />
                   إعادة المحاولة
                 </button>
               </div>
 
-              <p className="mt-4 text-sm leading-7 text-slate-500">
+              <p
+                role="status"
+                aria-live="polite"
+                className="mt-4 leading-7 text-slate-600"
+              >
                 {listening
-                  ? 'الميكروفون يعمل. تابع القراءة بوضوح.'
-                  : 'يمكنك الاستماع إلى كل آية أو تجربة المتابعة الصوتية.'}
+                  ? 'الميكروفون يعمل. ستتغير الألوان بعد تثبيت نتيجة التعرف على الصوت.'
+                  : 'يمكنك الاستماع إلى الآيات أو بدء المتابعة الصوتية.'}
               </p>
 
-              <div className="mt-5">
-                <div className="mb-2 flex justify-between text-sm">
-                  <span>المتابعة التقريبية</span>
-                  <span>{progress}%</span>
+              <div className="mt-6">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="font-semibold text-slate-800">
+                    الكلمات المتطابقة تقريبياً
+                  </span>
+                  <span className="font-bold tabular-nums text-emerald-800">
+                    {progress}٪
+                  </span>
                 </div>
 
                 <div
                   className="h-3 overflow-hidden rounded-full bg-slate-100"
                   role="progressbar"
-                  aria-valuenow={progress}
+                  aria-label="نسبة الكلمات المتطابقة تقريبياً"
                   aria-valuemin={0}
                   aria-valuemax={100}
-                  aria-label="نسبة الكلمات المتطابقة تقريبياً"
+                  aria-valuenow={progress}
                 >
                   <div
-                    className="h-full rounded-full bg-emerald-600 transition-all"
+                    className="h-full rounded-full bg-emerald-600 motion-reduce:transition-none"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
+
+                <p className="mt-2 text-sm text-slate-500">
+                  {matchedCount} من {expectedWords.length} كلمة
+                </p>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-4 text-sm">
-                <span className="flex items-center gap-2 text-emerald-700">
-                  <span className="h-3 w-3 rounded-full bg-emerald-500" />
+              <div className="mt-5 flex flex-wrap gap-4 text-sm">
+                <span className="flex items-center gap-2 text-emerald-800">
+                  <span className="size-3 rounded-full bg-emerald-500" />
                   تطابق محتمل
                 </span>
-                <span className="flex items-center gap-2 text-amber-700">
-                  <span className="h-3 w-3 rounded-full bg-amber-400" />
-                  يحتاج إلى مراجعة
-                </span>
-                <span className="flex items-center gap-2 text-slate-500">
-                  <span className="h-3 w-3 rounded-full bg-slate-300" />
-                  لم تتم متابعته
+
+                <span className="flex items-center gap-2 text-slate-600">
+                  <span className="size-3 rounded-full bg-slate-300" />
+                  لم يتم التحقق
                 </span>
               </div>
             </section>
 
+            {simpleMode && (
+              <section
+                aria-label="التنقل بين الآيات"
+                className="mb-6 rounded-2xl bg-emerald-50 p-5"
+              >
+                <p className="mb-4 text-center text-lg font-bold text-emerald-950">
+                  الآية {currentAyahIndex + 1} من {ayahs.length}
+                </p>
+
+                <div className="flex flex-wrap justify-between gap-3">
+                  <button
+                    type="button"
+                    disabled={currentAyahIndex === 0}
+                    onClick={() => navigateAyah(-1)}
+                    className="min-h-14 rounded-xl bg-white px-5 text-lg font-bold text-emerald-900 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-emerald-700"
+                  >
+                    الآية السابقة
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={currentAyahIndex >= ayahs.length - 1}
+                    onClick={() => navigateAyah(1)}
+                    className="min-h-14 rounded-xl bg-emerald-700 px-5 text-lg font-bold text-white disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-emerald-700"
+                  >
+                    الآية التالية
+                  </button>
+                </div>
+              </section>
+            )}
+
             <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-8">
-                
-{simpleMode && (
-  <div className="mb-6 rounded-2xl bg-emerald-50 p-5">
-    <p className="mb-4 text-center text-lg font-bold text-emerald-950">
-      الآية {currentAyahIndex + 1} من {surah.ayahs.length}
-    </p>
-
-    <div className="flex items-center justify-between gap-3">
-      <button
-        type="button"
-        disabled={currentAyahIndex === 0}
-        onClick={() => setCurrentAyahIndex((i) => i - 1)}
-        className={`min-h-14 rounded-xl bg-white px-5 font-bold text-emerald-900 shadow-sm disabled:opacity-40 ${
-          largeControls ? 'text-lg' : 'text-sm'
-        }`}
-      >
-        الآية السابقة
-      </button>
-
-      <button
-        type="button"
-        disabled={currentAyahIndex >= surah.ayahs.length - 1}
-        onClick={() => setCurrentAyahIndex((i) => i + 1)}
-        className={`min-h-14 rounded-xl bg-emerald-700 px-5 font-bold text-white disabled:opacity-40 ${
-          largeControls ? 'text-lg' : 'text-sm'
-        }`}
-      >
-        الآية التالية
-      </button>
-    </div>
-  </div>
-)}
-
               <h2 className="mb-6 text-xl font-bold text-emerald-950">
                 آيات السورة
               </h2>
 
               <div className="space-y-6">
-{(simpleMode
-  ? [surah.ayahs[currentAyahIndex]].filter(Boolean)
-  : surah.ayahs
-).map((ayah) => (                  <article
-                    key={ayah.numberInSurah}
-                    className="rounded-2xl border border-slate-100 p-4 sm:p-6"
-                  >
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm text-emerald-800">
-                        الآية {ayah.numberInSurah}
-                      </span>
+                {displayedAyahs.map((ayah) => {
+                  const ayahIndex = ayah.numberInSurah - 1
+                  let wordIndex = wordOffsets[ayahIndex] ?? 0
 
-                      <button
-                        onClick={() => playAyah(ayah)}
-                        aria-label={
-                          playingAyah === ayah.numberInSurah
-                            ? 'إيقاف التلاوة'
-                            : 'استماع إلى الآية'
-                        }
-                        className="rounded-xl p-3 text-emerald-700 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
-                      >
-                        {playingAyah === ayah.numberInSurah
-                          ? <Pause size={21} />
-                          : <Play size={21} />}
-                      </button>
-                    </div>
+                  return (
+                    <article
+                      key={ayah.numberInSurah}
+                      className="rounded-2xl border border-slate-200 p-4 sm:p-6"
+                    >
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <span className="rounded-full bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                          الآية {ayah.numberInSurah}
+                        </span>
 
-                    <p className="text-right text-2xl leading-[2.4] sm:text-3xl">
-                     {ayah.text
-  .split(/\s+/)
-  .filter(Boolean)
-  .map((word, localIndex) => {
+                        <button
+                          type="button"
+                          onClick={() => playAyah(ayah)}
+                          aria-label={
+                            playingAyah === ayah.numberInSurah
+                              ? 'إيقاف التلاوة'
+                              : 'استماع إلى الآية'
+                          }
+                          className="flex size-12 items-center justify-center rounded-xl text-emerald-800 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
+                        >
+                          {playingAyah === ayah.numberInSurah ? (
+                            <Pause size={24} />
+                          ) : (
+                            <Play size={24} />
+                          )}
+                        </button>
+                      </div>
+
+                      <p className="text-right text-2xl leading-[2.5] sm:text-3xl">
+                        {ayah.text.split(/\s+/).map((word, localIndex) => {
                           const index = wordIndex++
                           const state = wordStates[index]
 
@@ -465,47 +593,60 @@ const wordOffsets = (surah?.ayahs || []).map((_, index, ayahs) =>
                               key={`${ayah.numberInSurah}-${localIndex}`}
                               className={`mx-1 inline rounded-lg px-1 ${
                                 state === 'match'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : state === 'review'
-                                    ? 'bg-amber-100 text-amber-900'
-                                    : 'text-slate-800'
+                                  ? 'bg-emerald-100 text-emerald-900'
+                                  : 'text-slate-800'
                               }`}
                             >
                               {word}{' '}
                             </span>
                           )
                         })}
-                    </p>
-                  </article>
-                ))}
+                      </p>
+                    </article>
+                  )
+                })}
               </div>
             </section>
 
-            <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5">
+            <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
               <div className="flex items-start gap-3">
-                <CircleHelp className="mt-1 shrink-0 text-amber-600" />
-                <p className="text-sm leading-7 text-slate-600">
-                  المتابعة الصوتية تقريبية؛ قد تتأثر باللهجة والنطق
-                  وجودة الميكروفون. اللون البرتقالي لا يعني بالضرورة
-                  وجود خطأ في التلاوة. لا تُستخدم هذه الألوان للحكم
-                  على التجويد أو صحة النطق.
+                <CircleHelp
+                  size={22}
+                  className="mt-1 shrink-0 text-amber-600"
+                />
+
+                <p className="leading-7 text-slate-600">
+                  التعرف على الصوت تقريبي وقد يخطئ في بعض الكلمات.
+                  اللون الأخضر يشير إلى تطابق محتمل فقط، ولا يؤكد صحة
+                  النطق أو أحكام التجويد.
                 </p>
               </div>
 
               <button
-  type="button"
-  onClick={onToggleCompleted}
-  className="mt-5 inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white hover:bg-emerald-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
->
-  <CheckCircle2 size={19} />
-  {isCompleted
-    ? 'إلغاء إتمام السورة'
-    : 'أنهيت القراءة'}
-</button>
+                type="button"
+                onClick={onToggleCompleted}
+                className="mt-5 inline-flex min-h-14 items-center gap-2 rounded-xl bg-emerald-700 px-5 py-3 text-lg font-bold text-white hover:bg-emerald-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+              >
+                <CheckCircle2 size={21} />
+                {isCompleted
+                  ? 'إلغاء إتمام السورة'
+                  : 'أنهيت القراءة'}
+              </button>
             </section>
 
+            {transcript && (
+              <details className="mt-6 rounded-2xl border border-slate-200 bg-white p-5">
+                <summary className="cursor-pointer font-semibold text-slate-800">
+                  عرض النص الذي تعرّف عليه المتصفح
+                </summary>
+                <p className="mt-3 leading-8 text-slate-600">
+                  {transcript}
+                </p>
+              </details>
+            )}
+
             <p className="mt-6 text-center text-xs leading-6 text-slate-500">
-              النص والتلاوة الصوتية: Al Quran Cloud API.
+              النص والتلاوة الصوتية عبر Al Quran Cloud API.
               {' '}
               <a
                 href="https://alquran.cloud/"
