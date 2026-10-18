@@ -10,215 +10,260 @@ import {
   Pause,
   Play,
   RotateCcw,
-  Volume2,
+  SpellCheck,
 } from 'lucide-react'
 
 const API_URL = 'https://api.alquran.cloud/v1'
 const BISMILLAH = ['بسم', 'الله', 'الرحمن', 'الرحيم']
-const LOOKAHEAD = 5 // Increased for better matching
-const SIMILARITY = 0.68 // Slightly lower for more tolerant matching
-const MIN_WORD_LENGTH = 2
 
-// Enhanced Arabic normalization for Quranic text
-const normalizeArabic = (text = '') => {
-  if (!text) return ''
-  
-  return text
+const PAGE_WORDS = 20 // an ayah longer than this is split into pages of 20 words
+const LOOKAHEAD = 3 // how many words ahead a spoken word may match
+const RESYNC = 12 // wider search used after several unmatched words in a row
+const MAX_ALTERNATIVES = 3 // speech-engine alternatives evaluated per result
+
+const DIALECTS = [
+  { code: 'ar-SA', label: 'العربية (السعودية)' },
+  { code: 'ar-EG', label: 'العربية (مصر)' },
+  { code: 'ar-DZ', label: 'العربية (الجزائر)' },
+  { code: 'ar-MA', label: 'العربية (المغرب)' },
+]
+
+/* ------------------------------------------------------------------ */
+/* Arabic normalisation                                                */
+/* ------------------------------------------------------------------ */
+
+// dagger = 'drop'  → هٰذا becomes هذا  (how most speech engines write it)
+// dagger = 'alif'  → هٰذا becomes هاذا (how the Uthmani text sounds)
+// Both forms are kept per word and the best score wins.
+const normalizeArabic = (text = '', dagger = 'drop') =>
+  text
     .normalize('NFC')
-    // Remove harakat (diacritics) but preserve shadda for emphasis detection
-    .replace(/[\u064B-\u0650\u0652-\u065F\u0670\u06D6-\u06ED]/g, '')
-    // Keep shadda (u0651) as it affects pronunciation
-    .replace(/\u0640/g, '') // Remove tatweel
-    // Normalize hamza forms
+    .replace(/\u0670/g, dagger === 'alif' ? 'ا' : '')
+    .replace(/[\u064B-\u065F\u06D6-\u06ED\u0640]/g, '')
     .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ی/g, 'ي')
+    .replace(/ک/g, 'ك')
+    .replace(/ة/g, 'ه')
     .replace(/ؤ/g, 'و')
     .replace(/ئ/g, 'ي')
-    // Normalize other common variations
-    .replace(/ى/g, 'ي')
-    .replace(/ة/g, 'ه') // Common in speech recognition
-    .replace(/[ء]/g, '') // Remove standalone hamza
-    // Remove non-Arabic characters except spaces
     .replace(/[^\u0621-\u064A\s]/g, '')
-    // Normalize multiple spaces
     .replace(/\s+/g, ' ')
     .trim()
-}
 
-// Calculate Levenshtein distance for similarity
-function levenshteinDistance(a, b) {
-  const matrix = Array.from({ length: a.length + 1 }, (_, i) => [i])
-  for (let j = 1; j <= b.length + 1; j++) matrix[0][j] = j
-  
-  for (let i = 1; i <= a.length + 1; i++) {
-    for (let j = 1; j <= b.length + 1; j++) {
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
-      )
-    }
-  }
-  return matrix[a.length][b.length]
-}
+/* ------------------------------------------------------------------ */
+/* Phonetic-aware similarity                                           */
+/* ------------------------------------------------------------------ */
 
-// Enhanced similarity with phonetic awareness for Arabic
+// Letters speech engines often swap: a substitution inside a group is cheap
+const CONFUSABLE = [
+  ['ث', 'س', 'ص'],
+  ['ذ', 'ز', 'ظ', 'ض'],
+  ['ت', 'ط'],
+  ['ك', 'ق'],
+  ['ح', 'ه'],
+  ['ع', 'ء', 'ا'],
+]
+const GROUP_OF = {}
+CONFUSABLE.forEach((group, i) => group.forEach((c) => (GROUP_OF[c] = i)))
+
+// Weak letters are often dropped or added by the recogniser
+const WEAK = new Set(['ا', 'و', 'ي', 'ء'])
+
+const subCost = (x, y) =>
+  x === y ? 0 : GROUP_OF[x] !== undefined && GROUP_OF[x] === GROUP_OF[y] ? 0.4 : 1
+const gapCost = (c) => (WEAK.has(c) ? 0.6 : 1)
+
 function similarity(a, b) {
   if (a === b) return 1
   if (!a.length || !b.length) return 0
-  
-  // Exact match after normalization
-  if (a === b) return 1
-  
-  // Check if one contains the other (for partial matches)
-  if (a.includes(b) || b.includes(a)) {
-    return Math.min(a.length, b.length) / Math.max(a.length, b.length) * 0.9
+
+  let prev = [0]
+  for (let j = 1; j <= b.length; j++) prev[j] = prev[j - 1] + gapCost(b[j - 1])
+
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [prev[0] + gapCost(a[i - 1])]
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + gapCost(a[i - 1]),
+        cur[j - 1] + gapCost(b[j - 1]),
+        prev[j - 1] + subCost(a[i - 1], b[j - 1]),
+      )
+    }
+    prev = cur
   }
-  
-  // Levenshtein-based similarity
-  const distance = levenshteinDistance(a, b)
-  return 1 - distance / Math.max(a.length, b.length)
+  return Math.max(0, 1 - prev[b.length] / Math.max(a.length, b.length))
 }
 
-// Check if words are phonetically similar (common Arabic speech patterns)
-function arePhoneticallySimilar(word1, word2) {
-  // Common Quranic word variations
-  const phoneticMap = {
-    'الله': ['اله', 'اللّه', 'اللّٰه'],
-    'محمد': ['محمد', 'محمّد'],
-    'الرحمن': ['الرحمان', 'الرحمن'],
-    'الرحيم': ['الرحيم', 'الرحييم'],
-    'رب': ['رب', 'رَب'],
-    'العالمين': ['العالمين', 'العلمين', 'العالمين'],
-  }
-  
-  for (const [canonical, variants] of Object.entries(phoneticMap)) {
-    if (variants.includes(word1) && variants.includes(word2)) return true
-  }
-  
-  return false
-}
+// Short words must match almost exactly, long words get more tolerance
+const needed = (len) => (len <= 2 ? 1 : len === 3 ? 0.8 : len === 4 ? 0.74 : 0.68)
 
-// Enhanced alignment with better error handling
-function align(spoken, expected, start, states, markReview) {
-  const next = { ...states }
-  let pointer = start
-  const matched = []
-  const skipped = []
-  
-  for (const word of spoken) {
-    if (word.length < MIN_WORD_LENGTH) continue
-    
-    let found = -1
-    let bestScore = 0
-    
-    // Look ahead with scoring
-    for (let k = 0; k <= LOOKAHEAD && pointer + k < expected.length; k++) {
-      const candidate = expected[pointer + k]
-      let score = similarity(word, candidate)
-      
-      // Boost score for phonetically similar words
-      if (arePhoneticallySimilar(word, candidate)) {
-        score = Math.max(score, 0.85)
-      }
-      
-      // Boost score for prefix matches (common in Arabic)
-      if (candidate.startsWith(word) || word.startsWith(candidate)) {
-        score = Math.max(score, 0.8)
-      }
-      
-      if (score >= SIMILARITY && score > bestScore) {
-        found = k
-        bestScore = score
+const wordScore = (word, token) =>
+  Math.max(similarity(word, token.norm), similarity(word, token.alt))
+
+/* ------------------------------------------------------------------ */
+/* Alignment                                                           */
+/* ------------------------------------------------------------------ */
+
+// Best match for spoken[i] starting at `pointer`. Handles:
+//  - a skipped word (up to `look` words ahead)
+//  - two spoken words that are one expected word  (merged)
+//  - one spoken word that is two expected words   (joined)
+function findMatch(spoken, i, tokens, pointer, limit, look, bump = 0) {
+  let best = null
+  const consider = (cand) => {
+    if (!best || cand.score > best.score) best = cand
+  }
+
+  for (let k = 0; k <= look && pointer + k < limit; k++) {
+    const token = tokens[pointer + k]
+    const need = needed(token.norm.length) + bump
+    const penalty = k * 0.02
+
+    const single = wordScore(spoken[i], token)
+    if (single >= need) consider({ skip: k, used: 1, span: 1, score: single - penalty })
+
+    if (i + 1 < spoken.length) {
+      const merged = wordScore(spoken[i] + spoken[i + 1], token)
+      if (merged >= need + 0.08) {
+        consider({ skip: k, used: 2, span: 1, score: merged - penalty - 0.02 })
       }
     }
-    
-    if (found === -1) {
-      skipped.push(word)
+
+    if (pointer + k + 1 < limit) {
+      const next = tokens[pointer + k + 1]
+      const joined = { norm: token.norm + next.norm, alt: token.alt + next.alt }
+      const score = wordScore(spoken[i], joined)
+      if (score >= needed(joined.norm.length) + 0.08 + bump) {
+        consider({ skip: k, used: 1, span: 2, score: score - penalty - 0.02 })
+      }
+    }
+  }
+  return best
+}
+
+// Moves forward through the expected words, never backwards, and never past
+// `limit` (the end of the current page).
+// `final` = the engine is sure about these words: skipped words are flagged
+// for review and near-misses are recorded as "heard differently".
+function align(spoken, tokens, start, limit, progress, final) {
+  const states = { ...progress.states }
+  const heard = { ...progress.heard }
+  let pointer = start
+  let misses = progress.misses
+  let gain = 0
+  let i = 0
+
+  while (i < spoken.length && pointer < limit) {
+    let cand = findMatch(spoken, i, tokens, pointer, limit, LOOKAHEAD)
+    if (!cand && misses >= 2) {
+      cand = findMatch(spoken, i, tokens, pointer, limit, RESYNC, 0.1)
+    }
+
+    if (cand) {
+      if (final) {
+        for (let k = 0; k < cand.skip; k++) states[pointer + k] = 'review'
+      }
+      for (let s = 0; s < cand.span; s++) {
+        states[pointer + cand.skip + s] = 'match'
+        delete heard[pointer + cand.skip + s]
+      }
+      gain += cand.span
+      pointer += cand.skip + cand.span
+      i += cand.used
+      misses = 0
       continue
     }
-    
-    // Mark skipped words as needing review
-    if (markReview) {
-      for (let k = 0; k < found; k++) {
-        if (next[pointer + k] !== 'match') {
-          next[pointer + k] = 'review'
-        }
-      }
+
+    // Near miss: the word sounds close to the expected one AND the next spoken
+    // word continues correctly, so the reader most likely mispronounced it.
+    if (
+      final &&
+      tokens[pointer].norm.length >= 3 &&
+      i + 1 < spoken.length &&
+      similarity(spoken[i], tokens[pointer].norm) >= 0.5 &&
+      findMatch(spoken, i + 1, tokens, pointer + 1, limit, LOOKAHEAD)
+    ) {
+      states[pointer] = 'review'
+      heard[pointer] = spoken[i]
+      pointer += 1
+      i += 1
+      continue
     }
-    
-    next[pointer + found] = 'match'
-    matched.push({ word, index: pointer + found, score: bestScore })
-    pointer += found + 1
+
+    misses += 1
+    i += 1
   }
-  
-  return { pointer, states: next, matched, skipped }
+
+  return { pointer, states, heard, misses, gain }
 }
 
-// Build text with enhanced tokenization
+// Some browsers (Android Chrome) resend earlier words at the start of each
+// new result. Drop that repeated prefix.
+function stripRepeated(words, last) {
+  if (last.length >= 2 && words.length >= last.length && last.every((w, i) => words[i] === w)) {
+    return words.slice(last.length)
+  }
+  return words
+}
+
+/* ------------------------------------------------------------------ */
+/* Text + pages                                                        */
+/* ------------------------------------------------------------------ */
+
+// One source of truth for display AND matching, so indexes can never drift apart.
+// A page is one ayah, unless the ayah has more than PAGE_WORDS words:
+// then it is cut into pages of PAGE_WORDS words each.
 function buildText(surahId, ayahs) {
   const list = ayahs.map((ayah) => {
     const tokens = []
-    const rawWords = ayah.text.split(/\s+/).filter(Boolean)
-    
-    rawWords.forEach((raw) => {
-      const norm = normalizeArabic(raw)
-      if (norm.length >= MIN_WORD_LENGTH) {
-        tokens.push({ 
-          text: raw, 
-          norm,
-          // Store original for display
-          display: raw,
-          // Phonetic key for matching
-          phonetic: norm.replace(/[اوي]/g, 'V') // Vowel skeleton
-        })
-      } else if (tokens.length) {
-        tokens[tokens.length - 1].text += ` ${raw}`
-        tokens[tokens.length - 1].display += ` ${raw}`
-      }
-    })
-    
-    return { 
-      number: ayah.numberInSurah, 
-      audio: ayah.audio, 
-      tokens, 
-      offset: 0,
-      // Add word count for this ayah
-      wordCount: tokens.length
-    }
+    ayah.text
+      .split(/\s+/)
+      .filter(Boolean)
+      .forEach((raw) => {
+        const norm = normalizeArabic(raw)
+        if (norm) tokens.push({ text: raw, norm, alt: normalizeArabic(raw, 'alif') })
+        else if (tokens.length) tokens[tokens.length - 1].text += ` ${raw}`
+      })
+    return { number: ayah.numberInSurah, audio: ayah.audio, tokens }
   })
 
-  // Handle bismillah
+  // This API edition prepends the bismillah to the first ayah of most surahs
   let bismillah = ''
   const first = list[0]
   if (surahId !== 1 && first && BISMILLAH.every((w, i) => first.tokens[i]?.norm === w)) {
     bismillah = first.tokens.slice(0, 4).map((t) => t.text).join(' ')
     first.tokens = first.tokens.slice(4)
-    first.wordCount = first.tokens.length
   }
 
+  const pages = []
   let offset = 0
   list.forEach((ayah) => {
-    ayah.offset = offset
-    offset += ayah.tokens.length
+    const parts = Math.ceil(ayah.tokens.length / PAGE_WORDS)
+    for (let p = 0; p < parts; p++) {
+      const tokens = ayah.tokens.slice(p * PAGE_WORDS, (p + 1) * PAGE_WORDS)
+      pages.push({
+        key: `${ayah.number}-${p}`,
+        ayahNumber: ayah.number,
+        part: p + 1,
+        parts,
+        audio: ayah.audio,
+        tokens,
+        start: offset,
+        end: offset + tokens.length,
+      })
+      offset += tokens.length
+    }
   })
 
-  const totalWords = offset
-  
-  return {
-    ayahs: list,
-    bismillah,
-    expected: list.flatMap((a) => a.tokens.map((t) => t.norm)),
-    totalWords,
-    // Determine if we should show full page (surahs > 50 words)
-    showFullPage: totalWords > 50,
-    // Calculate ayah ranges for display
-    ayahRanges: list.map((a, i) => ({
-      start: a.offset,
-      end: a.offset + a.tokens.length,
-      index: i
-    }))
-  }
+  return { pages, bismillah, tokens: pages.flatMap((page) => page.tokens) }
 }
+
+const emptyProgress = () => ({ pointer: 0, states: {}, heard: {}, misses: 0 })
+
+/* ------------------------------------------------------------------ */
+/* Component                                                           */
+/* ------------------------------------------------------------------ */
 
 export default function Reading({
   surahId,
@@ -233,34 +278,32 @@ export default function Reading({
   const [listening, setListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [wordStates, setWordStates] = useState({})
-  const [wordScores, setWordScores] = useState({}) // Track confidence scores
+  const [wordHeard, setWordHeard] = useState({})
+  const [pointer, setPointer] = useState(0)
+  const [pageIndex, setPageIndex] = useState(0)
   const [playingAyah, setPlayingAyah] = useState(null)
-  const [currentAyahIndex, setCurrentAyahIndex] = useState(0)
+  const [lang, setLang] = useState('ar-SA')
   const [simpleMode, setSimpleMode] = useState(
     () => document.documentElement.dataset.a11ySimple === 'on',
   )
-  const [speechStats, setSpeechStats] = useState({
-    totalSpoken: 0,
-    matched: 0,
-    skipped: 0,
-    avgScore: 0
-  })
 
   const recognitionRef = useRef(null)
   const wantListeningRef = useRef(false)
-  const progressRef = useRef({ pointer: 0, states: {}, scores: {} })
+  const progressRef = useRef(emptyProgress())
+  const lastFinalRef = useRef([])
   const audioRef = useRef(null)
-  const statsRef = useRef({ totalSpoken: 0, matched: 0, skipped: 0, scoreSum: 0 })
 
   const built = useMemo(
     () => (surah ? buildText(surahId, surah.ayahs) : null),
     [surah, surahId],
   )
-  const builtRef = useRef(null)
-  builtRef.current = built
+  const page = built?.pages[pageIndex] ?? null
 
-  // Check if we should use full-page mode
-  const isFullPageMode = built?.showFullPage || false
+  // Refs so the speech callback always sees the latest text and page
+  const builtRef = useRef(null)
+  const pageRef = useRef(null)
+  builtRef.current = built
+  pageRef.current = page
 
   useEffect(() => {
     const sync = () =>
@@ -276,13 +319,10 @@ export default function Reading({
       setLoading(true)
       setError('')
       setSurah(null)
-      setWordStates({})
-      setWordScores({})
       setTranscript('')
-      setCurrentAyahIndex(0)
-      setSpeechStats({ totalSpoken: 0, matched: 0, skipped: 0, avgScore: 0 })
-      progressRef.current = { pointer: 0, states: {}, scores: {} }
-      statsRef.current = { totalSpoken: 0, matched: 0, skipped: 0, scoreSum: 0 }
+      setPageIndex(0)
+      commit(emptyProgress())
+      lastFinalRef.current = []
 
       try {
         const response = await fetch(`${API_URL}/surah/${surahId}/ar.alafasy`)
@@ -306,6 +346,7 @@ export default function Reading({
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surahId])
 
   useEffect(() => {
@@ -316,6 +357,14 @@ export default function Reading({
     }
   }, [])
 
+  // Keeps the ref (used by the speech callback) and the React state in sync
+  function commit(next) {
+    progressRef.current = next
+    setWordStates(next.states)
+    setWordHeard(next.heard)
+    setPointer(next.pointer)
+  }
+
   function stopListening() {
     wantListeningRef.current = false
     recognitionRef.current?.stop()
@@ -323,58 +372,44 @@ export default function Reading({
   }
 
   function handleResult(event) {
-    const expected = builtRef.current?.expected
-    if (!expected) return
+    const tokens = builtRef.current?.tokens
+    const current = pageRef.current
+    if (!tokens || !current) return
 
-    let { pointer, states, scores } = progressRef.current
-    let shown = states
-    let shownScores = scores
-    let heard = ''
+    let progress = progressRef.current
+    let shown = progress
+    let heardText = ''
 
+    // Only final results move the saved position. Interim results are shown
+    // as tentative matches and recomputed from the saved position each time.
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const result = event.results[i]
-      heard = result[0].transcript
-      const words = normalizeArabic(heard).split(/\s+/).filter(Boolean)
-      
-      const out = align(words, expected, pointer, states, result.isFinal)
-      shown = out.states
-      shownScores = { ...scores }
-      
-      // Update scores for matched words
-      out.matched.forEach(({ index, score }) => {
-        shownScores[index] = Math.max(shownScores[index] || 0, score)
-      })
-      
-      // Update stats
-      statsRef.current.totalSpoken += words.length
-      statsRef.current.matched += out.matched.length
-      statsRef.current.skipped += out.skipped.length
-      out.matched.forEach(({ score }) => {
-        statsRef.current.scoreSum += score
-      })
+      let best = null
 
+      // Try every alternative the engine offers and keep the one that
+      // follows the text the furthest
+      const count = Math.min(result.length, MAX_ALTERNATIVES)
+      for (let a = 0; a < count; a++) {
+        const text = result[a].transcript
+        const all = normalizeArabic(text).split(' ').filter(Boolean)
+        const words = stripRepeated(all, lastFinalRef.current)
+        const out = align(words, tokens, progress.pointer, current.end, progress, result.isFinal)
+        if (!best || out.gain > best.out.gain) best = { out, text, all }
+      }
+      if (!best) continue
+
+      heardText = best.text
+      shown = best.out
       if (result.isFinal) {
-        pointer = out.pointer
-        states = out.states
-        scores = shownScores
-        progressRef.current = { pointer, states, scores }
-        
-        // Update stats display
-        const avg = statsRef.current.matched > 0 
-          ? statsRef.current.scoreSum / statsRef.current.matched 
-          : 0
-        setSpeechStats({
-          totalSpoken: statsRef.current.totalSpoken,
-          matched: statsRef.current.matched,
-          skipped: statsRef.current.skipped,
-          avgScore: avg
-        })
+        progress = best.out
+        lastFinalRef.current = best.all
       }
     }
 
-    setTranscript(heard.trim())
-    setWordStates(shown)
-    setWordScores(shownScores)
+    setTranscript(heardText.trim())
+    setWordStates(shown.states)
+    setWordHeard(shown.heard)
+    if (progress !== progressRef.current) commit(progress)
   }
 
   function startListening() {
@@ -388,60 +423,38 @@ export default function Reading({
 
     recognitionRef.current?.stop()
     wantListeningRef.current = true
+    lastFinalRef.current = []
 
     const recognition = new SpeechRecognition()
-    // Enhanced settings for Arabic
-    recognition.lang = 'ar-SA'
+    recognition.lang = lang
     recognition.continuous = true
     recognition.interimResults = true
-    recognition.maxAlternatives = 3 // Get multiple alternatives for better matching
+    recognition.maxAlternatives = MAX_ALTERNATIVES
 
     recognition.onstart = () => {
       setListening(true)
       setError('')
     }
-    
-    recognition.onresult = (event) => {
-      // Try all alternatives for better matching
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i]
-        // Use the best alternative (highest confidence)
-        let bestTranscript = result[0].transcript
-        let bestConfidence = result[0].confidence || 0
-        
-        for (let j = 1; j < result.length; j++) {
-          if ((result[j].confidence || 0) > bestConfidence) {
-            bestTranscript = result[j].transcript
-            bestConfidence = result[j].confidence || 0
-          }
-        }
-        
-        // Create a modified event with the best alternative
-        const modifiedEvent = {
-          ...event,
-          resultIndex: i,
-          results: [{
-            ...result,
-            0: { transcript: bestTranscript, confidence: bestConfidence },
-            isFinal: result.isFinal,
-            length: 1
-          }]
-        }
-        
-        handleResult(modifiedEvent)
-      }
-    }
-    
+    recognition.onresult = handleResult
     recognition.onerror = (event) => {
       if (event.error === 'no-speech' || event.error === 'aborted') return
       wantListeningRef.current = false
-      setError('لم نتمكن من التعرف على الصوت. تحقق من إذن الميكروفون وحاول مجدداً.')
       setListening(false)
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setError('الميكروفون غير مسموح به. فعّل الإذن من إعدادات المتصفح ثم حاول مجدداً.')
+      } else if (event.error === 'audio-capture') {
+        setError('لم يتم العثور على ميكروفون. تحقق من الجهاز ثم حاول مجدداً.')
+      } else if (event.error === 'network') {
+        setError('التعرف على الصوت يحتاج إلى اتصال بالإنترنت.')
+      } else {
+        setError('لم نتمكن من التعرف على الصوت. حاول مجدداً.')
+      }
     }
-    
+    // Browsers end continuous recognition after a pause: restart it
     recognition.onend = () => {
       if (wantListeningRef.current && recognitionRef.current === recognition) {
         try {
+          lastFinalRef.current = []
           recognition.start()
           return
         } catch {
@@ -455,27 +468,49 @@ export default function Reading({
     recognition.start()
   }
 
-  function startOfCurrentView(index = currentAyahIndex) {
-    // In full page mode, always start from beginning
-    if (isFullPageMode) return 0
-    return simpleMode ? built?.ayahs[index]?.offset ?? 0 : 0
-  }
-
-  function goToAyah(index) {
-    setCurrentAyahIndex(index)
-    progressRef.current = {
-      ...progressRef.current,
-      pointer: built?.ayahs[index]?.offset ?? 0,
+  // Clears one page's results and puts the reading position at its first word
+  function resetPage(target) {
+    const { states, heard } = progressRef.current
+    const nextStates = { ...states }
+    const nextHeard = { ...heard }
+    for (let n = target.start; n < target.end; n++) {
+      delete nextStates[n]
+      delete nextHeard[n]
     }
+    lastFinalRef.current = []
+    setTranscript('')
+    commit({ pointer: target.start, states: nextStates, heard: nextHeard, misses: 0 })
   }
 
-  function playAyah(ayah) {
-    if (!ayah.audio) {
+  function goToPage(index) {
+    const target = built?.pages[index]
+    if (!target) return
+    audioRef.current?.pause()
+    setPlayingAyah(null)
+    setPageIndex(index)
+    resetPage(target)
+  }
+
+  // For when the last word was never recognised: closes the page and flags
+  // every word that was not followed
+  function finishPage() {
+    if (!page) return
+    const { states, heard } = progressRef.current
+    const nextStates = { ...states }
+    for (let n = page.start; n < page.end; n++) {
+      if (!nextStates[n]) nextStates[n] = 'review'
+    }
+    commit({ pointer: page.end, states: nextStates, heard: { ...heard }, misses: 0 })
+  }
+
+  function playAyah(target) {
+    if (!target.audio) {
       setError('الصوت غير متاح لهذه الآية حالياً.')
       return
     }
 
-    if (playingAyah === ayah.number) {
+    const id = target.ayahNumber
+    if (playingAyah === id) {
       audioRef.current?.pause()
       setPlayingAyah(null)
       return
@@ -484,7 +519,7 @@ export default function Reading({
     if (!audioRef.current) audioRef.current = new Audio()
 
     audioRef.current.pause()
-    audioRef.current.src = ayah.audio
+    audioRef.current.src = target.audio
     audioRef.current.onended = () => setPlayingAyah(null)
     audioRef.current.onerror = () => {
       setPlayingAyah(null)
@@ -493,73 +528,49 @@ export default function Reading({
 
     audioRef.current
       .play()
-      .then(() => setPlayingAyah(ayah.number))
+      .then(() => setPlayingAyah(id))
       .catch(() => setError('تعذر تشغيل الصوت حالياً.'))
-  }
-
-  // Play entire surah sequentially
-  async function playFullSurah() {
-    if (!built?.ayahs) return
-    
-    for (const ayah of built.ayahs) {
-      if (!wantListeningRef.current) break // Allow cancellation
-      
-      await new Promise((resolve) => {
-        const audio = new Audio(ayah.audio)
-        audioRef.current = audio
-        setPlayingAyah(ayah.number)
-        
-        // Highlight current ayah
-        setCurrentAyahIndex(built.ayahs.indexOf(ayah))
-        
-        audio.onended = () => {
-          setPlayingAyah(null)
-          resolve()
-        }
-        audio.onerror = () => {
-          setPlayingAyah(null)
-          setError('تعذر تشغيل بعض الآيات.')
-          resolve()
-        }
-        audio.play().catch(() => {
-          setError('تعذر تشغيل الصوت.')
-          resolve()
-        })
-      })
-    }
   }
 
   function resetPractice() {
     stopListening()
     audioRef.current?.pause()
     setPlayingAyah(null)
-    setTranscript('')
-    setWordStates({})
-    setWordScores({})
     setError('')
-    setSpeechStats({ totalSpoken: 0, matched: 0, skipped: 0, avgScore: 0 })
-    statsRef.current = { totalSpoken: 0, matched: 0, skipped: 0, scoreSum: 0 }
-    progressRef.current = { pointer: startOfCurrentView(), states: {}, scores: {} }
+    if (page) resetPage(page)
   }
 
-  const totalWords = built?.expected.length ?? 0
+  const totalWords = built?.tokens.length ?? 0
   const matchedCount = Object.values(wordStates).filter((s) => s === 'match').length
-  const reviewCount = Object.values(wordStates).filter((s) => s === 'review').length
   const progress = totalWords ? Math.round((matchedCount / totalWords) * 100) : 0
-  
-  // Calculate precision metrics
-  const precision = speechStats.totalSpoken > 0 
-    ? Math.round((speechStats.matched / speechStats.totalSpoken) * 100) 
-    : 0
 
-  // Determine visible ayahs based on mode
-  const visibleAyahs = built
-    ? isFullPageMode
-      ? built.ayahs // Show all ayahs in full page mode
-      : simpleMode
-        ? [built.ayahs[currentAyahIndex]].filter(Boolean)
-        : built.ayahs
-    : []
+  // Spell check of the current page
+  const report = useMemo(() => {
+    if (!page) return null
+    let matched = 0
+    let pending = 0
+    const review = []
+    page.tokens.forEach((token, i) => {
+      const state = wordStates[page.start + i]
+      if (state === 'match') matched += 1
+      else if (state === 'review') {
+        review.push({ text: token.text, heard: wordHeard[page.start + i] })
+      } else pending += 1
+    })
+    const total = page.tokens.length
+    return {
+      total,
+      matched,
+      pending,
+      review,
+      percent: total ? Math.round((matched / total) * 100) : 0,
+      complete: pointer >= page.end,
+    }
+  }, [page, wordStates, wordHeard, pointer])
+
+  const showReport = report && report.matched + report.review.length > 0
+  const lastPage = built ? pageIndex >= built.pages.length - 1 : true
+  const bigButton = simpleMode ? 'min-h-14 text-lg font-bold' : 'min-h-12 font-semibold'
 
   return (
     <main
@@ -567,7 +578,7 @@ export default function Reading({
       lang="ar"
       className="min-h-screen bg-[#f7f8f3] px-4 py-8 text-slate-800 sm:px-8"
     >
-      <div className={`mx-auto ${isFullPageMode ? 'max-w-6xl' : 'max-w-4xl'}`}>
+      <div className="mx-auto max-w-4xl">
         <button
           type="button"
           onClick={onBack}
@@ -581,22 +592,13 @@ export default function Reading({
           <div className="mb-3 flex items-center gap-3 text-emerald-700">
             <BookOpen size={25} />
             <span className="font-medium">رحلة التعلم</span>
-            {isFullPageMode && (
-              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs text-emerald-800">
-                عرض كامل ({totalWords} كلمة)
-              </span>
-            )}
           </div>
 
           <h1 className="text-3xl font-bold text-emerald-950 sm:text-4xl">
             {surah?.name || surahName}
           </h1>
 
-          {surah && (
-            <p className="mt-2 text-slate-500">
-              {surah.numberOfAyahs} آيات • {totalWords} كلمة
-            </p>
-          )}
+          {surah && <p className="mt-2 text-slate-500">{surah.numberOfAyahs} آيات</p>}
 
           <p className="mt-4 leading-8 text-slate-600">
             اقرأ بهدوء، واستمع إلى التلاوة، واستخدم الميكروفون لتجربة المتابعة الصوتية.
@@ -629,13 +631,13 @@ export default function Reading({
           </button>
         )}
 
-        {built && (
+        {built && page && (
           <>
             <section
               aria-label="أدوات القراءة"
               className="mb-6 rounded-2xl bg-white p-5 shadow-sm"
             >
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={listening ? stopListening : startListening}
@@ -655,19 +657,24 @@ export default function Reading({
                   className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
                 >
                   <RotateCcw size={18} />
-                  إعادة المحاولة
+                  إعادة هذه الصفحة
                 </button>
 
-                {isFullPageMode && (
-                  <button
-                    type="button"
-                    onClick={playFullSurah}
-                    className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-3 text-white hover:bg-amber-700"
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <span>اللهجة</span>
+                  <select
+                    value={lang}
+                    onChange={(e) => setLang(e.target.value)}
+                    disabled={listening}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 disabled:opacity-50"
                   >
-                    <Volume2 size={18} />
-                    تشغيل السورة كاملة
-                  </button>
-                )}
+                    {DIALECTS.map((d) => (
+                      <option key={d.code} value={d.code}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
 
               <p className="mt-4 text-sm leading-7 text-slate-500">
@@ -677,40 +684,14 @@ export default function Reading({
               </p>
 
               {listening && (
-                <div className="mt-2 space-y-2">
-                  <p className="min-h-6 text-sm text-slate-400">
-                    {transcript ? `أسمع: ${transcript}` : 'في انتظار صوتك…'}
-                  </p>
-                  
-                  {/* Precision metrics */}
-                  {speechStats.totalSpoken > 0 && (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 p-3 bg-slate-50 rounded-lg text-xs">
-                      <div>
-                        <span className="block text-slate-500">الكلمات المنطوقة</span>
-                        <span className="font-bold text-lg">{speechStats.totalSpoken}</span>
-                      </div>
-                      <div>
-                        <span className="block text-slate-500">المتطابقة</span>
-                        <span className="font-bold text-lg text-emerald-600">{speechStats.matched}</span>
-                      </div>
-                      <div>
-                        <span className="block text-slate-500">الدقة</span>
-                        <span className="font-bold text-lg text-blue-600">{precision}%</span>
-                      </div>
-                      <div>
-                        <span className="block text-slate-500">متوسط الثقة</span>
-                        <span className="font-bold text-lg text-amber-600">
-                          {Math.round(speechStats.avgScore * 100)}%
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <p className="mt-2 min-h-6 text-sm text-slate-400">
+                  {transcript ? `أسمع: ${transcript}` : 'في انتظار صوتك…'}
+                </p>
               )}
 
               <div className="mt-5">
                 <div className="mb-2 flex justify-between text-sm">
-                  <span>المتابعة التقريبية</span>
+                  <span>المتابعة التقريبية للسورة</span>
                   <span>{progress}%</span>
                 </div>
 
@@ -727,12 +708,6 @@ export default function Reading({
                     style={{ width: `${progress}%` }}
                   />
                 </div>
-                
-                {reviewCount > 0 && (
-                  <p className="mt-1 text-xs text-amber-600">
-                    {reviewCount} كلمة تحتاج مراجعة
-                  </p>
-                )}
               </div>
 
               <div className="mt-4 flex flex-wrap gap-4 text-sm">
@@ -751,149 +726,134 @@ export default function Reading({
               </div>
             </section>
 
-            <section className={`rounded-3xl bg-white p-5 shadow-sm sm:p-8 ${isFullPageMode ? 'min-h-screen' : ''}`}>
-              {/* Only show ayah navigation in simple mode AND not full page */}
-              {simpleMode && !isFullPageMode && (
-                <div className="mb-6 rounded-2xl bg-emerald-50 p-5">
-                  <p className="mb-4 text-center text-lg font-bold text-emerald-950">
-                    الآية {currentAyahIndex + 1} من {built.ayahs.length}
-                  </p>
+            <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-8">
+              <div className="mb-6 rounded-2xl bg-emerald-50 p-5">
+                <p className="mb-4 text-center text-lg font-bold text-emerald-950">
+                  الصفحة {pageIndex + 1} من {built.pages.length}
+                </p>
 
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      disabled={currentAyahIndex === 0}
-                      onClick={() => goToAyah(currentAyahIndex - 1)}
-                      className="min-h-14 rounded-xl bg-white px-5 text-lg font-bold text-emerald-900 shadow-sm disabled:opacity-40"
-                    >
-                      الآية السابقة
-                    </button>
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    disabled={pageIndex === 0}
+                    onClick={() => goToPage(pageIndex - 1)}
+                    className={`${bigButton} rounded-xl bg-white px-5 text-emerald-900 shadow-sm disabled:opacity-40`}
+                  >
+                    الصفحة السابقة
+                  </button>
 
-                    <button
-                      type="button"
-                      disabled={currentAyahIndex >= built.ayahs.length - 1}
-                      onClick={() => goToAyah(currentAyahIndex + 1)}
-                      className="min-h-14 rounded-xl bg-emerald-700 px-5 text-lg font-bold text-white disabled:opacity-40"
-                    >
-                      الآية التالية
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    disabled={lastPage}
+                    onClick={() => goToPage(pageIndex + 1)}
+                    className={`${bigButton} rounded-xl px-5 text-white disabled:opacity-40 ${
+                      report?.complete ? 'bg-emerald-800 ring-4 ring-emerald-300' : 'bg-emerald-700'
+                    }`}
+                  >
+                    الصفحة التالية
+                  </button>
                 </div>
-              )}
+              </div>
 
-              <h2 className="mb-6 text-xl font-bold text-emerald-950">
-                آيات السورة
-                {isFullPageMode && (
-                  <span className="mr-2 text-sm font-normal text-slate-500">
-                    (عرض كامل)
-                  </span>
-                )}
-              </h2>
-
-              {built.bismillah && (!simpleMode || currentAyahIndex === 0 || isFullPageMode) && (
+              {built.bismillah && pageIndex === 0 && (
                 <p className="mb-6 text-center text-2xl leading-[2.2] text-emerald-900 sm:text-3xl">
                   {built.bismillah}
                 </p>
               )}
 
-              <div className={isFullPageMode ? 'space-y-4' : 'space-y-6'}>
-                {visibleAyahs.map((ayah, ayahIdx) => (
-                  <article
-                    key={ayah.number}
-                    className={`rounded-2xl border p-4 sm:p-6 ${
-                      isFullPageMode 
-                        ? 'border-slate-200 bg-slate-50/50' 
-                        : 'border-slate-100'
-                    } ${playingAyah === ayah.number ? 'ring-2 ring-emerald-500' : ''}`}
+              <article className="rounded-2xl border border-slate-100 p-4 sm:p-6">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm text-emerald-800">
+                    الآية {page.ayahNumber}
+                    {page.parts > 1 && ` — الجزء ${page.part} من ${page.parts}`}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => playAyah(page)}
+                    aria-label={
+                      playingAyah === page.ayahNumber ? 'إيقاف التلاوة' : 'استماع إلى الآية'
+                    }
+                    className="rounded-xl p-3 text-emerald-700 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
                   >
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm text-emerald-800">
-                          الآية {ayah.number}
-                        </span>
-                        <span className="text-xs text-slate-400">
-                          {ayah.wordCount} كلمة
-                        </span>
-                      </div>
+                    {playingAyah === page.ayahNumber ? <Pause size={21} /> : <Play size={21} />}
+                  </button>
+                </div>
 
-                      <button
-                        type="button"
-                        onClick={() => playAyah(ayah)}
-                        aria-label={
-                          playingAyah === ayah.number ? 'إيقاف التلاوة' : 'استماع إلى الآية'
-                        }
-                        className="rounded-xl p-3 text-emerald-700 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-emerald-700"
+                <p className="text-right text-2xl leading-[2.4] sm:text-3xl">
+                  {page.tokens.map((token, i) => {
+                    const state = wordStates[page.start + i]
+                    return (
+                      <span
+                        key={`${page.key}-${i}`}
+                        className={`mx-1 inline rounded-lg px-1 ${
+                          state === 'match'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : state === 'review'
+                              ? 'bg-amber-100 text-amber-900 underline decoration-dotted decoration-amber-600 underline-offset-8'
+                              : 'text-slate-800'
+                        }`}
                       >
-                        {playingAyah === ayah.number ? <Pause size={21} /> : <Play size={21} />}
-                      </button>
-                    </div>
+                        {token.text}{' '}
+                      </span>
+                    )
+                  })}
+                </p>
+              </article>
 
-                    <p className={`text-right leading-[2.4] ${isFullPageMode ? 'text-xl sm:text-2xl' : 'text-2xl sm:text-3xl'}`}>
-                      {ayah.tokens.map((token, i) => {
-                        const globalIndex = ayah.offset + i
-                        const state = wordStates[globalIndex]
-                        const score = wordScores[globalIndex]
-                        
-                        // Determine styling based on state and score
-                        let bgColor = 'text-slate-800'
-                        if (state === 'match') {
-                          if (score >= 0.9) {
-                            bgColor = 'bg-emerald-200 text-emerald-900 font-medium'
-                          } else if (score >= 0.75) {
-                            bgColor = 'bg-emerald-100 text-emerald-800'
-                          } else {
-                            bgColor = 'bg-emerald-50 text-emerald-700'
-                          }
-                        } else if (state === 'review') {
-                          bgColor = 'bg-amber-100 text-amber-900 underline decoration-dotted decoration-amber-600 underline-offset-8'
-                        }
-                        
-                        return (
-                          <span
-                            key={`${ayah.number}-${i}`}
-                            className={`mx-1 inline rounded-lg px-1 ${bgColor}`}
-                            title={score ? `ثقة: ${Math.round(score * 100)}%` : undefined}
-                          >
-                            {token.text}{' '}
+              {showReport && (
+                <div
+                  className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-5"
+                  aria-live="polite"
+                >
+                  <div className="mb-3 flex items-center gap-2 font-bold text-emerald-950">
+                    <SpellCheck size={20} className="text-emerald-700" />
+                    {report.complete ? 'نتيجة فحص الصفحة' : 'فحص مبدئي للصفحة'}
+                  </div>
+
+                  <p className="text-sm leading-7 text-slate-700">
+                    تطابقت {report.matched} من {report.total} كلمة ({report.percent}%)
+                    {report.pending > 0 && ` — لم تتم متابعة ${report.pending} كلمة بعد`}
+                    {report.complete && report.review.length === 0 && ' — قراءة ممتازة'}
+                  </p>
+
+                  {report.review.length > 0 && (
+                    <ul className="mt-3 space-y-2">
+                      {report.review.map((item, i) => (
+                        <li
+                          key={`${item.text}-${i}`}
+                          className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl bg-white px-4 py-2 text-sm"
+                        >
+                          <span className="text-lg text-amber-900">{item.text}</span>
+                          <span className="text-slate-500">
+                            {item.heard ? `سُمعت: ${item.heard}` : 'لم تُسمع بوضوح'}
                           </span>
-                        )
-                      })}
-                    </p>
-                    
-                    {/* Show ayah progress in full page mode */}
-                    {isFullPageMode && (
-                      <div className="mt-3 h-1 w-full bg-slate-100 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-emerald-500 transition-all"
-                          style={{ 
-                            width: `${(ayah.tokens.filter((_, i) => wordStates[ayah.offset + i] === 'match').length / ayah.tokens.length) * 100}%` 
-                          }}
-                        />
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {!report.complete && (
+                    <button
+                      type="button"
+                      onClick={finishPage}
+                      className="mt-4 rounded-xl border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-50"
+                    >
+                      أنهيت الصفحة
+                    </button>
+                  )}
+                </div>
+              )}
             </section>
 
             <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5">
               <div className="flex items-start gap-3">
                 <CircleHelp className="mt-1 shrink-0 text-amber-600" />
-                <div className="text-sm leading-7 text-slate-600">
-                  <p>
-                    المتابعة الصوتية تقريبية؛ قد تتأثر باللهجة والنطق وجودة الميكروفون.
-                    اللون البرتقالي لا يعني بالضرورة وجود خطأ في التلاوة.
-                  </p>
-                  <p className="mt-2">
-                    <strong>نصائح للحصول على أفضل النتائج:</strong>
-                  </p>
-                  <ul className="list-disc list-inside mt-1 space-y-1">
-                    <li>استخدم ميكروفوناً واضحاً وبعيداً عن الضوضاء</li>
-                    <li>اقرأ بوتيرة ثابتة وواضحة</li>
-                    <li>تجنب القراءة بسرعة كبيرة جداً</li>
-                    <li>النظام يدعم الاختلافات الشائعة في نطق الحروف</li>
-                  </ul>
-                </div>
+                <p className="text-sm leading-7 text-slate-600">
+                  المتابعة الصوتية تقريبية؛ قد تتأثر باللهجة والنطق وجودة الميكروفون.
+                  اللون البرتقالي لا يعني بالضرورة وجود خطأ في التلاوة. لا تُستخدم هذه
+                  الألوان للحكم على التجويد أو صحة النطق.
+                </p>
               </div>
 
               <button
