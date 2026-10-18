@@ -40,8 +40,34 @@ export default function Reading({
   const [wordStates, setWordStates] = useState({})
   const [playingAyah, setPlayingAyah] = useState(null)
 
+const [currentAyahIndex, setCurrentAyahIndex] = useState(0)
+const [simpleMode, setSimpleMode] = useState(
+  () => document.documentElement.dataset.a11ySimple === 'on'
+)
+const [largeControls, setLargeControls] = useState(true)
+
+
+
+useEffect(() => {
+  const syncAccessibility = () => {
+    const root = document.documentElement
+
+    setSimpleMode(root.dataset.a11ySimple === 'on')
+    setLargeControls(root.dataset.a11ySimple === 'on')
+  }
+
+  window.addEventListener('a11y-settings-changed', syncAccessibility)
+
+  return () => {
+    window.removeEventListener('a11y-settings-changed', syncAccessibility)
+  }
+}, [])
+
+
+
   const recognitionRef = useRef(null)
   const audioRef = useRef(null)
+
 
   useEffect(() => {
     let cancelled = false
@@ -217,8 +243,16 @@ export default function Reading({
     ? Math.round((matchedCount / allWords.length) * 100)
     : 0
 
-  let wordIndex = 0
-
+const wordOffsets = (surah?.ayahs || []).map((_, index, ayahs) =>
+  ayahs
+    .slice(0, index)
+    .reduce(
+      (total, item) =>
+        total + normalizeArabic(item.text).split(/\s+/).filter(Boolean).length,
+      0
+    )
+)
+  let wordIndex = simpleMode ? (wordOffsets[currentAyahIndex] || 0) : 0
   return (
     <main
       dir="rtl"
@@ -290,7 +324,7 @@ export default function Reading({
               <div className="flex flex-wrap gap-3">
                 <button
                   onClick={listening ? stopListening : startListening}
-                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-3 font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                  className={`inline-flex  min-h-14 items-center gap-2 rounded-xl px-5 py-3 font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 ${
                     listening
                       ? 'bg-rose-600 focus-visible:outline-rose-700'
                       : 'bg-emerald-700 focus-visible:outline-emerald-700'
@@ -353,13 +387,48 @@ export default function Reading({
             </section>
 
             <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-8">
+                
+{simpleMode && (
+  <div className="mb-6 rounded-2xl bg-emerald-50 p-5">
+    <p className="mb-4 text-center text-lg font-bold text-emerald-950">
+      الآية {currentAyahIndex + 1} من {surah.ayahs.length}
+    </p>
+
+    <div className="flex items-center justify-between gap-3">
+      <button
+        type="button"
+        disabled={currentAyahIndex === 0}
+        onClick={() => setCurrentAyahIndex((i) => i - 1)}
+        className={`min-h-14 rounded-xl bg-white px-5 font-bold text-emerald-900 shadow-sm disabled:opacity-40 ${
+          largeControls ? 'text-lg' : 'text-sm'
+        }`}
+      >
+        الآية السابقة
+      </button>
+
+      <button
+        type="button"
+        disabled={currentAyahIndex >= surah.ayahs.length - 1}
+        onClick={() => setCurrentAyahIndex((i) => i + 1)}
+        className={`min-h-14 rounded-xl bg-emerald-700 px-5 font-bold text-white disabled:opacity-40 ${
+          largeControls ? 'text-lg' : 'text-sm'
+        }`}
+      >
+        الآية التالية
+      </button>
+    </div>
+  </div>
+)}
+
               <h2 className="mb-6 text-xl font-bold text-emerald-950">
                 آيات السورة
               </h2>
 
               <div className="space-y-6">
-                {surah.ayahs.map((ayah) => (
-                  <article
+{(simpleMode
+  ? [surah.ayahs[currentAyahIndex]].filter(Boolean)
+  : surah.ayahs
+).map((ayah) => (                  <article
                     key={ayah.numberInSurah}
                     className="rounded-2xl border border-slate-100 p-4 sm:p-6"
                   >

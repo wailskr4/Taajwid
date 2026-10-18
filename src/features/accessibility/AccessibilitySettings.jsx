@@ -89,6 +89,7 @@ export function applySettings(settings) {
   root.dataset.a11yMotion = settings.reduceMotion ? 'reduced' : 'normal'
   root.dataset.a11yFocus = settings.focusMode ? 'on' : 'off'
   root.dataset.a11ySimple = settings.simpleMode ? 'on' : 'off'
+  window.dispatchEvent(new Event('a11y-settings-changed'))
 }
 
 // Call once in main.jsx before rendering, so settings apply on every screen
