@@ -1,0 +1,101 @@
+
+@import "tailwindcss";
+
+:root {
+  font-family: "Noto Sans Arabic", Tahoma, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+/* Import once in main.jsx, after your Tailwind CSS:
+   import './accessibility.css'
+   Driven by the data attributes set in AccessibilitySettings.jsx */
+
+/* Text size: Tailwind uses rem, so scaling the root scales everything */
+html {
+  font-size: calc(100% * var(--a11y-scale, 1));
+}
+
+/* Reduce motion */
+:root[data-a11y-motion='reduced'] *,
+:root[data-a11y-motion='reduced'] *::before,
+:root[data-a11y-motion='reduced'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* High contrast: darken secondary text, strengthen borders and controls */
+:root[data-a11y-contrast='high'] body {
+  background: #ffffff;
+  color: #0f172a;
+}
+:root[data-a11y-contrast='high'] .text-slate-400,
+:root[data-a11y-contrast='high'] .text-slate-500,
+:root[data-a11y-contrast='high'] .text-slate-600,
+:root[data-a11y-contrast='high'] .text-slate-700 {
+  color: #0f172a;
+}
+:root[data-a11y-contrast='high'] .text-emerald-800 {
+  color: #022c22;
+}
+:root[data-a11y-contrast='high'] .text-emerald-200,
+:root[data-a11y-contrast='high'] .text-emerald-100 {
+  color: #ffffff;
+}
+:root[data-a11y-contrast='high'] .border-slate-100,
+:root[data-a11y-contrast='high'] .border-slate-200,
+:root[data-a11y-contrast='high'] .border-slate-300,
+:root[data-a11y-contrast='high'] .border-emerald-100,
+:root[data-a11y-contrast='high'] .border-emerald-200 {
+  border-color: #334155;
+}
+:root[data-a11y-contrast='high'] .bg-emerald-700,
+:root[data-a11y-contrast='high'] .bg-emerald-600 {
+  background-color: #064e3b;
+}
+:root[data-a11y-contrast='high'] .bg-slate-500 {
+  background-color: #1e293b;
+}
+:root[data-a11y-contrast='high'] .bg-emerald-50,
+:root[data-a11y-contrast='high'] .bg-slate-50 {
+  background-color: #ffffff;
+}
+
+/* Focus mode: very visible keyboard focus and hover target */
+:root[data-a11y-focus='on'] :focus-visible {
+  outline: 4px solid #b45309 !important;
+  outline-offset: 4px !important;
+}
+:root[data-a11y-focus='on'] a:hover,
+:root[data-a11y-focus='on'] button:hover {
+  outline: 3px solid #b45309;
+  outline-offset: 2px;
+}
+
+/* Simple interface: no shadows, blur or hover lift */
+:root[data-a11y-simple='on'] * {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: none !important;
+}
+:root[data-a11y-simple='on'] [class*='hover:-translate-y']:hover {
+  transform: none !important;
+}
