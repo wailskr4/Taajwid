@@ -262,3 +262,4 @@ export default function AccessibilitySettings({ currentTheme, onThemeChange, the
     </>
   )
 }
+export { initAccessibility } from './Accessibility'
