@@ -340,7 +340,7 @@ export default function SocialShare({ completed, total, streak, theme }) {
 
                 }}
 
-                autoFocus
+                
 
               />
 
