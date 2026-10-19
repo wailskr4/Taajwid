@@ -691,7 +691,7 @@ onRemoveBookmark={(verse) =>
                 استمع إلى التلاوة، وتدرّب على القراءة، وتابع تقدّمك خطوة بخطوة.
               </p>
 
-              <div className="mt-7 flex flex-wrap gap-3">
+              <div className="mt-7 flex flex-wrap gap-3 " id="progress">
                 {resumeTarget && (
                   <button
                     type="button"
@@ -714,7 +714,7 @@ onRemoveBookmark={(verse) =>
             </section>
 
             {/* Stats */}
-            <section className="mt-8 grid gap-4 sm:grid-cols-3" aria-label="إحصائياتك">
+            <section  className="mt-8 grid gap-4 sm:grid-cols-3" aria-label="إحصائياتك">
               <StatCard
                 label="السور التي أتممتها"
                 value={completed.length}
@@ -756,7 +756,7 @@ onRemoveBookmark={(verse) =>
             </section>
 
             {/* Surah list */}
-            <section id="surahs" tabIndex={-1} className="mt-12 scroll-mt-6 outline-none">
+            <section id="surahs" tabIndex={-1} className="mt-12 scroll-mt-6 outline-none" >
               <div className="mb-6">
                 <h2 className="text-2xl font-bold">اختر السورة</h2>
                 <p className="mt-2 opacity-70">ابدأ بالسور القصيرة وتعلّم حسب وتيرتك.</p>
