@@ -41,6 +41,12 @@ body {
   background-color: var(--color-bg);
   color: var(--color-text);
   line-height: var(--line-height);
+    font-family: "Tajawal", sans-serif;
+
+}
+.quran-text {
+  font-family: "Amiri Quran", serif;
+  line-height: 2.2;
 }
 
 /* Contraste élevé */

@@ -1,6 +1,6 @@
 
 import { useState } from 'react'
-
+import Tajwid from '../assets/taajwid.png'
 const navLinks = [
   { label: 'الرئيسية', href: '#home' },
   { label: 'السور', href: '#surahs' },
@@ -17,27 +17,24 @@ export default function Navbar() {
     >
       <nav
         aria-label="القائمة الرئيسية"
-        className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4"
+        className="mx-auto flex max-w-7xl flex-row items-center justify-between gap-4 px-5 py-4"
       >
         {/* Logo */}
         <a
           href="#home"
-          onClick={() => setMenuOpen(false)}
-          className="flex shrink-0 items-center gap-3 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-700"
-          aria-label="نور القرآن - الصفحة الرئيسية"
+          
+          className="flex items-center gap-3"
         >
-          <span className="flex size-11 items-center justify-center rounded-2xl bg-emerald-800 text-2xl font-bold text-white shadow-sm">
-            ق
-          </span>
+          <img
+            src={Tajwid}
+            alt="تجويد"
+            className="h-10 w-auto object-contain sm:h-14"
+            draggable="false"
+          />
 
-          <span>
-            <span className="block text-lg font-extrabold tracking-tight text-emerald-950">
-              نور القرآن
-            </span>
-            <span className="block text-xs text-slate-500">
-              التعلّم للجميع
-            </span>
-          </span>
+
+        
+
         </a>
 
         {/* Navigation desktop */}
