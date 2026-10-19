@@ -14,9 +14,10 @@ import {
 } from 'lucide-react'
 
 const API_URL = 'https://api.alquran.cloud/v1'
+const FALLBACK_API_URL = 'https://api.quran.com/api/v4' // fallback si 503
 const BISMILLAH = ['بسم', 'الله', 'الرحمن', 'الرحيم']
 
-const PAGE_WORDS = 20 // an ayah longer than this is split into pages of 20 words
+const VERSES_PER_PAGE = 12 // chaque page contient 12 versets (sourah < 12 = 1 page)
 const LOOKAHEAD = 3 // how many words ahead a spoken word may match
 const RESYNC = 12 // wider search used after several unmatched words in a row
 const MAX_ALTERNATIVES = 3 // speech-engine alternatives evaluated per result
@@ -212,8 +213,8 @@ function stripRepeated(words, last) {
 /* ------------------------------------------------------------------ */
 
 // One source of truth for display AND matching, so indexes can never drift apart.
-// A page is one ayah, unless the ayah has more than PAGE_WORDS words:
-// then it is cut into pages of PAGE_WORDS words each.
+// Chaque page contient VERSES_PER_PAGE versets (12 par défaut).
+// Une sourah avec 10 versets = 1 seule page ; à chaque 12 versets, une nouvelle page est créée.
 function buildText(surahId, ayahs) {
   const list = ayahs.map((ayah) => {
     const tokens = []
@@ -236,25 +237,32 @@ function buildText(surahId, ayahs) {
     first.tokens = first.tokens.slice(4)
   }
 
+  // Grouper les versets par pages de VERSES_PER_PAGE (12 versets)
   const pages = []
   let offset = 0
-  list.forEach((ayah) => {
-    const parts = Math.ceil(ayah.tokens.length / PAGE_WORDS)
-    for (let p = 0; p < parts; p++) {
-      const tokens = ayah.tokens.slice(p * PAGE_WORDS, (p + 1) * PAGE_WORDS)
-      pages.push({
-        key: `${ayah.number}-${p}`,
-        ayahNumber: ayah.number,
-        part: p + 1,
-        parts,
-        audio: ayah.audio,
-        tokens,
-        start: offset,
-        end: offset + tokens.length,
-      })
-      offset += tokens.length
-    }
-  })
+  const totalPages = Math.ceil(list.length / VERSES_PER_PAGE)
+
+  for (let p = 0; p < totalPages; p++) {
+    const startAyah = p * VERSES_PER_PAGE
+    const endAyah = Math.min(startAyah + VERSES_PER_PAGE, list.length)
+    const pageAyahs = list.slice(startAyah, endAyah)
+    const tokens = pageAyahs.flatMap((a) => a.tokens)
+    const firstAyah = pageAyahs[0]
+    const lastAyah = pageAyahs[pageAyahs.length - 1]
+
+    pages.push({
+      key: `${firstAyah.number}-${p}`,
+      ayahNumber: firstAyah.number,
+      lastAyahNumber: lastAyah.number,
+      part: p + 1,
+      parts: totalPages,
+      audio: firstAyah.audio,
+      tokens,
+      start: offset,
+      end: offset + tokens.length,
+    })
+    offset += tokens.length
+  }
 
   return { pages, bismillah, tokens: pages.flatMap((page) => page.tokens) }
 }
@@ -315,6 +323,55 @@ export default function Reading({
   useEffect(() => {
     let cancelled = false
 
+    // Fallback : essayer l'API principale puis l'API de secours en cas d'erreur 503
+    async function fetchWithFallback(urls) {
+      let lastError = null
+      for (const { url, parser } of urls) {
+        try {
+          const response = await fetch(url)
+          if (!response.ok) {
+            lastError = new Error(`HTTP ${response.status}`)
+            continue // essayer la source suivante
+          }
+          const data = await response.json()
+          const parsed = parser(data)
+          if (parsed) return parsed
+          lastError = new Error('bad data')
+        } catch (err) {
+          lastError = err
+        }
+      }
+      throw lastError || new Error('all sources failed')
+    }
+
+    // Parser pour l'API principale (alquran.cloud)
+    function parseAlQuranCloud(data) {
+      if (data.code !== 200 || !data.data?.ayahs) return null
+      return {
+        name: data.data.name,
+        numberOfAyahs: data.data.numberOfAyahs,
+        ayahs: data.data.ayahs.map((ayah) => ({
+          numberInSurah: ayah.numberInSurah,
+          text: ayah.text,
+          audio: ayah.audio,
+        })),
+      }
+    }
+
+    // Parser pour l'API de fallback (quran.com v4)
+    function parseQuranCom(data) {
+      if (!data.verses?.length) return null
+      return {
+        name: data.verses[0]?.text_uthmani ? '' : '', // le nom sera affiché via surahName prop
+        numberOfAyahs: data.verses.length,
+        ayahs: data.verses.map((verse) => ({
+          numberInSurah: verse.verse_number || verse.verse_key?.split(':')[1],
+          text: verse.text_uthmani || verse.text_imlaei || verse.text_madani || '',
+          audio: verse.audio?.url ? `https://verses.quran.com/${verse.audio.url}` : null,
+        })),
+      }
+    }
+
     async function loadSurah() {
       setLoading(true)
       setError('')
@@ -325,17 +382,22 @@ export default function Reading({
       lastFinalRef.current = []
 
       try {
-        const response = await fetch(`${API_URL}/surah/${surahId}/ar.alafasy`)
-        if (!response.ok) throw new Error('load failed')
+        const sources = [
+          {
+            url: `${API_URL}/surah/${surahId}/ar.alafasy`,
+            parser: parseAlQuranCloud,
+          },
+          {
+            url: `${FALLBACK_API_URL}/verses/by_chapter/${surahId}?language=ar&words=false&translations=false&audio=1&text_uthmani=true`,
+            parser: parseQuranCom,
+          },
+        ]
 
-        const result = await response.json()
-        if (result.code !== 200 || !result.data?.ayahs) {
-          throw new Error('bad data')
-        }
-        if (!cancelled) setSurah(result.data)
+        const surahData = await fetchWithFallback(sources)
+        if (!cancelled) setSurah(surahData)
       } catch {
         if (!cancelled) {
-          setError('تعذر تحميل السورة. تحقق من اتصال الإنترنت ثم حاول مجدداً.')
+          setError('تعذر تحميل السورة من جميع المصادر. تحقق من اتصال الإنترنت ثم حاول مجدداً.')
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -598,7 +660,12 @@ export default function Reading({
             {surah?.name || surahName}
           </h1>
 
-          {surah && <p className="mt-2 text-slate-500">{surah.numberOfAyahs} آيات</p>}
+          {surah && (
+            <p className="mt-2 text-slate-500">
+              {surah.name ? `${surah.name} — ` : ''}
+              {surah.numberOfAyahs} آيات
+            </p>
+          )}
 
           <p className="mt-4 leading-8 text-slate-600">
             اقرأ بهدوء، واستمع إلى التلاوة، واستخدم الميكروفون لتجربة المتابعة الصوتية.
@@ -764,8 +831,10 @@ export default function Reading({
               <article className="rounded-2xl border border-slate-100 p-4 sm:p-6">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm text-emerald-800">
-                    الآية {page.ayahNumber}
-                    {page.parts > 1 && ` — الجزء ${page.part} من ${page.parts}`}
+                    {page.lastAyahNumber && page.lastAyahNumber !== page.ayahNumber
+                      ? `الآيات ${page.ayahNumber} - ${page.lastAyahNumber}`
+                      : `الآية ${page.ayahNumber}`}
+                    {` — الصفحة ${page.part} من ${page.parts}`}
                   </span>
 
                   <button
