@@ -6,8 +6,7 @@ import {
   applyFontSize,
   getStoredFontSize,
   safeSet,
-} from './accessibility'
-
+} from './Accessibility'
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
 
 function CheckIcon() {
@@ -262,4 +261,3 @@ export default function AccessibilitySettings({ currentTheme, onThemeChange, the
     </>
   )
 }
-export { initAccessibility } from './Accessibility'
