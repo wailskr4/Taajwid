@@ -18,12 +18,20 @@ import {
 /*  Constants                                                                 */
 /* -------------------------------------------------------------------------- */
 
-const API_URL = 'https://api.alquran.cloud/v1'
-const FALLBACK_API_URL = 'https://api.quran.com/api/v4'
+// Texte Warsh (édition à vérifier, voir note plus bas)
+const WARSH_EDITION = 'ara-quranwarsh'
+const WARSH_TEXT_URL = (id) =>
+  `https://cdn.jsdelivr.net/gh/fawazahmed0/quran-api@1/editions/${WARSH_EDITION}/${id}.min.json`
+
+// Audio Warsh : Yassin Al-Jazaery (récitateur algérien) sur everyayah.com
+const WARSH_AUDIO_BASE = 'https://everyayah.com/data/Warsh/Warsh_Yassin_Al_Jazaery_64kbps'
+const warshAudio = (surah, ayah) =>
+  `${WARSH_AUDIO_BASE}/${String(surah).padStart(3, '0')}${String(ayah).padStart(3, '0')}.mp3`
+
 const BISMILLAH = ['بسم', 'الله', 'الرحمن', 'الرحيم']
 
-const VERSES_PER_PAGE = 12
-const WORDS_PER_PAGE = 80 // soft cap so pages of long verses stay readable
+const VERSES_PER_PAGE = 20
+const WORDS_PER_PAGE = 110 // soft cap so pages of long verses stay readable
 const LOOKAHEAD = 3
 const RESYNC = 12
 const MAX_ALTERNATIVES = 3
@@ -265,14 +273,21 @@ function buildText(surahId, ayahs) {
     return { number: ayah.numberInSurah, audio: ayah.audio, tokens }
   })
 
-  let bismillah = ''
-  const first = list[0]
+let bismillah = ''
+const first = list[0]
 
-  if (surahId !== 1 && first && BISMILLAH.every((w, i) => first.tokens[i]?.norm === w)) {
-    bismillah = first.tokens.slice(0, 4).map((t) => t.text).join(' ')
+// La basmala est affichée séparément pour les sourates
+// qui commencent par elle, sauf At-Tawbah (sourate 9).
+if (surahId !== 1 && surahId !== 9) {
+  bismillah = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'
+
+  if (
+    first &&
+    BISMILLAH.every((word, i) => first.tokens[i]?.norm === word)
+  ) {
     first.tokens = first.tokens.slice(4)
   }
-
+}
   const pages = []
   let offset = 0
   let i = 0
@@ -465,32 +480,6 @@ const bookmarkedSet = useMemo(
       throw lastError || new Error('all sources failed')
     }
 
-    const parseAlQuranCloud = (data) => {
-      if (data.code !== 200 || !data.data?.ayahs) return null
-      return {
-        name: data.data.name,
-        numberOfAyahs: data.data.numberOfAyahs,
-        ayahs: data.data.ayahs.map((a) => ({
-          numberInSurah: a.numberInSurah,
-          text: a.text,
-          audio: a.audio,
-        })),
-      }
-    }
-
-    const parseQuranCom = (data) => {
-      if (!data.verses?.length) return null
-      return {
-        name: '',
-        numberOfAyahs: data.verses.length,
-        ayahs: data.verses.map((v) => ({
-          numberInSurah: Number(v.verse_number || v.verse_key?.split(':')[1]),
-          text: v.text_uthmani || v.text_imlaei || v.text_madani || '',
-          audio: v.audio?.url ? `https://verses.quran.com/${v.audio.url}` : null,
-        })),
-      }
-    }
-
     async function loadSurah() {
       wantListeningRef.current = false
       clearTimeout(settleRef.current)
@@ -523,27 +512,40 @@ const bookmarkedSet = useMemo(
       setPreview(null)
       lastFinalRef.current = []
 
-      const cached = surahCache.get(surahId)
-      if (cached) {
-        setSurah(cached)
-        setLoading(false)
-        return
-      }
+const cacheKey = `${WARSH_EDITION}-${surahId}`
+const cached = surahCache.get(cacheKey)
+
+if (cached) {
+  setSurah(cached)
+  setLoading(false)
+  return
+}
 
       setLoading(true)
       setSurah(null)
 
-      const sources = [
-        { url: `${API_URL}/surah/${surahId}/ar.alafasy`, parser: parseAlQuranCloud },
-        {
-          url: `${FALLBACK_API_URL}/verses/by_chapter/${surahId}?language=ar&words=false&translations=false&audio=1&text_uthmani=true`,
-          parser: parseQuranCom,
-        },
-      ]
+const parseWarsh = (data) => {
+  const list = data.chapter
+  if (!Array.isArray(list) || !list.length) return null
+  return {
+    name: '',
+    numberOfAyahs: list.length,
+    ayahs: list.map((v) => ({
+      numberInSurah: v.verse,
+      text: v.text,
+      audio: warshAudio(surahId, v.verse),
+    })),
+  }
+}
 
+const sources = [
+  { url: WARSH_TEXT_URL(surahId), parser: parseWarsh },
+  // même fichier, version non minifiée, en cas d'échec
+  { url: WARSH_TEXT_URL(surahId).replace('.min.json', '.json'), parser: parseWarsh },
+]
       try {
         const data = await fetchWithFallback(sources)
-        surahCache.set(surahId, data)
+surahCache.set(`${WARSH_EDITION}-${surahId}`, data)
         if (!cancelled) setSurah(data)
       } catch (err) {
         if (!cancelled && err.name !== 'AbortError') {
@@ -1332,14 +1334,19 @@ const toggleBookmark = useCallback(
                 </div>
               </nav>
 
-              {built.bismillah && pageIndex === 0 && (
-                <p
-                  className="mb-6 text-center text-2xl leading-[2.2] sm:text-3xl"
-                  style={{ color: 'var(--color-primary)', fontFamily: QURAN_FONT }}
-                >
-                  {built.bismillah}
-                </p>
-              )}
+{pageIndex === 0 && built?.bismillah && (
+  <div
+    dir="rtl"
+    lang="ar"
+    className="mb-6 text-center text-3xl leading-loose"
+    style={{
+      fontFamily: QURAN_FONT,
+      color: 'var(--color-text)',
+    }}
+  >
+    {built.bismillah}
+  </div>
+)}
 
               <article
                 className="rounded-2xl border p-4 sm:p-6"
