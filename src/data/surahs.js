@@ -1,5 +1,8 @@
 
 export const surahs = [
+  { id: 1, name: 'الفاتحة', verses: 7 },
+    { id: 2, name: 'البقرة', verses: 286 },
+
   { id: 108, name: 'الكوثر', verses: 3 },
   { id: 112, name: 'الإخلاص', verses: 4 },
   { id: 110, name: 'النصر', verses: 3 },
