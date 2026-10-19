@@ -50,28 +50,8 @@ export default function Navbar() {
           ))}
         </div>
 
-        {/* Accessibility shortcut */}
-        <a
-          href="#accessibility"
-          className="hidden items-center gap-2 rounded-xl bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-800 transition hover:bg-emerald-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 lg:inline-flex"
-        >
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            className="size-5"
-          >
-            <circle cx="12" cy="4.5" r="2.2" />
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M4 9h16M12 9v11m0-7-5 6m5-6 5 6"
-            />
-          </svg>
-          إعدادات الوصول
-        </a>
+  
+
 
         {/* Mobile menu button */}
         <button
@@ -132,13 +112,7 @@ export default function Navbar() {
               </a>
             ))}
 
-            <a
-              href="#accessibility"
-              onClick={() => setMenuOpen(false)}
-              className="rounded-xl bg-emerald-50 px-4 py-3 font-semibold text-emerald-800 transition hover:bg-emerald-100"
-            >
-              إعدادات الوصول
-            </a>
+
           </div>
         </div>
       )}

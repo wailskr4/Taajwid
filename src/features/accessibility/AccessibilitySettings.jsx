@@ -89,14 +89,16 @@ export default function AccessibilitySettings({ currentTheme, onThemeChange, the
 
   return (
     <>
+
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setIsOpen(true)}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
+        
         aria-label="إعدادات الوصول"
-        className="fixed bottom-6 left-6 z-50 flex size-14 items-center justify-center rounded-full text-white shadow-lg transition hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-4"
+        className="fixed bottom-6 left-6 z-50 flex size-14 items-center cursor-pointer justify-center rounded-full text-white shadow-lg transition hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-4"
         style={{ backgroundColor: 'var(--color-primary)', outlineColor: 'var(--color-primary)' }}
       >
         <svg
@@ -160,7 +162,7 @@ export default function AccessibilitySettings({ currentTheme, onThemeChange, the
 
             {/* Theme */}
             <section className="mb-6" aria-labelledby="a11y-theme">
-              <h3 id="a11y-theme" className="mb-3 font-semibold">
+              <h3 id="a11y-theme" className="mb-3 font-semibold" >
                 نمط الألوان
               </h3>
               <div className="space-y-2">
