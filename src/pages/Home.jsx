@@ -4,7 +4,7 @@ import Navbar from '../components/Navbar'
 import Reading from '../features/reading/Reading'
 import AccessibilitySettings from '../features/accessibility/AccessibilitySettings'
 import SocialShare from '../features/social/SocialShare'
-
+import Footer from '../components/Footer'
 import { useTheme } from '../context/ThemeContext'
 import { Bookmark, BookOpen, Trash2 } from 'lucide-react'
 /* -------------------------------------------------------------------------- */
@@ -20,6 +20,17 @@ const STREAK_KEY = 'quran-streak'
 const EMPTY_ARRAY = []
 const EMPTY_OBJECT = {}
 const INITIAL_STREAK = { count: 0, lastDate: null }
+
+
+
+
+
+
+
+
+
+
+
 
 const FILTERS = [
   { id: 'all', label: 'الكل' },
@@ -927,12 +938,7 @@ onRemoveBookmark={(verse) =>
             />
           </main>
 
-          <footer
-            className="border-t px-5 py-6 text-center text-sm opacity-70"
-            style={{ borderColor: 'var(--color-border)' }}
-          >
-            نور القرآن — التعلّم للجميع
-          </footer>
+    <Footer />
         </>
       )}
 
