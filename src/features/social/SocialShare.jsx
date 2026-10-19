@@ -431,7 +431,7 @@ async function generateImage() {
 
   // Message selon le progrès
   const greeting =
-    percent >= 100 ? 'ما شاء الله! ختمت 🎉' : percent >= 50 ? 'ما شاء الله!' : percent > 0 ? 'أحسنت!' : 'هيا نبدأ!'
+    percent >= 100 ? 'ما شاء الله! ختمت 🎉 تقبل الله منك و سيجازيك على اجتهادك' : percent >= 50 ? 'تبارك الله واسل' : percent > 0 ? ' أحسنت ما شاء الله!' : 'هيا نبدأ!'
 
   ctx.save()
   ctx.shadowColor = 'rgba(255,216,107,.7)'
