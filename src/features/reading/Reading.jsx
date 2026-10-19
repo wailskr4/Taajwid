@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import {
   ArrowRight,
   BookOpen,
@@ -421,7 +421,11 @@ export default function Reading({
     onUpdateRef.current = onUpdateVerseProgress
   }, [built, page, onUpdateVerseProgress])
 
-  const bookmarkedSet = useMemo(() => new Set(bookmarks.map((b) => b.verseNumber)), [bookmarks])
+const bookmarkedSet = useMemo(
+  () => new Set(bookmarks.map((bookmark) => bookmark.verseNumber)),
+  [bookmarks]
+)
+
 
   /* ---- settings sync ---- */
   useEffect(() => {
@@ -917,10 +921,16 @@ export default function Reading({
     if (page) resetPage(page)
   }
 
-  function toggleBookmark(number) {
-    if (bookmarkedSet.has(number)) onRemoveBookmark?.(number)
-    else onAddBookmark?.(number)
-  }
+const toggleBookmark = useCallback(
+  (verseNumber) => {
+    if (bookmarkedSet.has(verseNumber)) {
+      onRemoveBookmark?.(verseNumber)
+    } else {
+      onAddBookmark?.(verseNumber)
+    }
+  },
+  [bookmarkedSet, onAddBookmark, onRemoveBookmark]
+)
 
   /* ------------------------------------------------------------------------ */
   /*  Audio (one verse, or the whole page in sequence)                        */

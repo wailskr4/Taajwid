@@ -1,7 +1,6 @@
-
 export const surahs = [
   { id: 1, name: 'الفاتحة', verses: 7 },
-    { id: 2, name: 'البقرة', verses: 286 },
+  { id: 2, name: 'البقرة', verses: 286 },
 
   { id: 108, name: 'الكوثر', verses: 3 },
   { id: 112, name: 'الإخلاص', verses: 4 },
@@ -13,4 +12,26 @@ export const surahs = [
   { id: 105, name: 'الفيل', verses: 5 },
   { id: 111, name: 'المسد', verses: 5 },
   { id: 107, name: 'الماعون', verses: 7 },
+
+  // 20 nouvelles sourates
+  { id: 106, name: 'قريش', verses: 4 },
+  { id: 102, name: 'التكاثر', verses: 8 },
+  { id: 101, name: 'القارعة', verses: 11 },
+  { id: 104, name: 'الهمزة', verses: 9 },
+  { id: 100, name: 'العاديات', verses: 11 },
+  { id: 99, name: 'الزلزلة', verses: 8 },
+  { id: 97, name: 'القدر', verses: 5 },
+  { id: 96, name: 'العلق', verses: 19 },
+  { id: 95, name: 'التين', verses: 8 },
+  { id: 94, name: 'الشرح', verses: 8 },
+  { id: 93, name: 'الضحى', verses: 11 },
+  { id: 92, name: 'الليل', verses: 21 },
+  { id: 91, name: 'الشمس', verses: 15 },
+  { id: 90, name: 'البلد', verses: 20 },
+  { id: 89, name: 'الفجر', verses: 30 },
+  { id: 87, name: 'الأعلى', verses: 19 },
+  { id: 86, name: 'الطارق', verses: 17 },
+  { id: 85, name: 'البروج', verses: 22 },
+  { id: 84, name: 'الانشقاق', verses: 25 },
+  { id: 83, name: 'المطففين', verses: 36 },
 ]
